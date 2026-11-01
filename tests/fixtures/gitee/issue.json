@@ -1,0 +1,17 @@
+{
+  "id": 34904144,
+  "number": "IKS47K",
+  "title": "Phase 3 read-path canary",
+  "body": "Repository-scoped Gitee Issue ingestion and comment polling canary for dsh-superagent. Do not use this repository for production work.",
+  "user": {
+    "id": 618074,
+    "login": "bourneW",
+    "name": "hhaa12321",
+    "type": "User"
+  },
+  "created_at": "2026-11-02T00:20:00+08:00",
+  "updated_at": "2026-11-02T00:20:06+08:00",
+  "html_url": "https://gitee.com/bourneW/dsh-superagent-gitee-canary/issues/IKS47K",
+  "comments": 1,
+  "state": "open"
+}

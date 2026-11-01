@@ -336,8 +336,8 @@ It also does not bind Threads to Ticket completion. Use `ctx.tickets.bindThread`
 Build the module as its own entry in `tsdown.config.ts`:
 
 ```ts
-entry: { index: 'src/index.ts', 'github-watch': 'src/sources/github.ts', 'feishu-watch': 'src/sources/feishu.ts',
-  'webhook-watch': 'src/sources/webhook.ts' },
+entry: { index: 'src/index.ts', 'github-watch': 'src/sources/github.ts', 'gitee-watch': 'src/sources/gitee.ts',
+  'feishu-watch': 'src/sources/feishu.ts', 'webhook-watch': 'src/sources/webhook.ts' },
 ```
 
 Then export the built file in `package.json` by adding `"./webhook-watch": "./lib/webhook-watch.js"` to `exports`, and add the plugin to the `insert` list of the bundle's `cordis.patch.yml`, disabled, as Feishu is:

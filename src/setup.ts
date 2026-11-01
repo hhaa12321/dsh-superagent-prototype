@@ -1,7 +1,7 @@
 /** Structured startup and configuration errors with the settings location where the operator can fix them. */
 import { fill } from './infra/text.ts'
 
-export type SetupPlace = 'deployment' | 'github' | 'feishu'
+export type SetupPlace = 'deployment' | 'github' | 'gitee' | 'feishu'
 export const SETUP_PROBLEMS = {
   foreignFile: ['deployment', '{file} was not written by dsh-superagent; move it, or choose another state directory.'],
   gitTooOld: ['deployment', 'git does not read the github.com credential configuration dsh-superagent writes; dsh-superagent needs git 2.32 or later.'],
@@ -14,8 +14,14 @@ export const SETUP_PROBLEMS = {
   repositoryUnreadable: ['github', '@{account} cannot read {repository}.'],
   repositoryUnreported: ['github', 'The agent GitHub CLI did not return {repository}.'],
   repositoryReadOnly: ['github', '@{account} cannot push to {repository}.'],
-  repositoryDuplicate: ['github', 'Two GitHub Source instances resolve the same repository {repository}: {sources}. One binding can own one repository.'],
-  sourceBindingFixed: ['github', 'The {source} Source is already bound to {from}, but setup resolved {to}. A Source instance cannot be rebound to another repository; add a new Source instance.'],
+  giteeRepositoryUnset: ['gitee', 'The Gitee Source names no repository.'],
+  giteeTokenUnset: ['gitee', 'The Gitee credential reference names {variable}, which is not set in the dsh-superagent process.'],
+  giteeTokenRejected: ['gitee', 'Gitee did not accept the configured token.'],
+  giteeRepositoryUnreadable: ['gitee', '@{account} cannot read {repository}.'],
+  giteeRepositoryUnreported: ['gitee', 'Gitee did not return {repository}.'],
+  giteeRepositoryReadOnly: ['gitee', '@{account} cannot push to {repository}.'],
+  repositoryDuplicate: ['deployment', 'Two repository-bound Source instances resolve the same repository {repository}: {sources}. One binding can own one repository.'],
+  sourceBindingFixed: ['deployment', 'The {source} Source is already bound to {from}, but setup resolved {to}. A Source instance cannot be rebound to another repository; add a new Source instance.'],
   feishuCliFailed: ['feishu', 'The bot lark-cli does not work.'],
   feishuNoApp: ['feishu', 'auth status of the bot lark-cli did not report the app.'],
   feishuBotNotReady: ['feishu', 'The bot identity of app {app} is {status}; configure the app secret with lark-cli.'],
@@ -23,7 +29,8 @@ export const SETUP_PROBLEMS = {
   feishuNoBot: ['feishu', 'The Feishu bot API did not return the bot\'s open_id.'],
 } as const satisfies Record<string, readonly [SetupPlace, string]>
 export type SetupCode = keyof typeof SETUP_PROBLEMS
-export interface SetupProblem { place: SetupPlace; code: SetupCode; values: Record<string, string>; detail: string }
+/** A setup failure; `source` names the Source instance it belongs to when it does not stop the whole deployment. */
+export interface SetupProblem { place: SetupPlace; code: SetupCode; values: Record<string, string>; detail: string; source?: string }
 
 /**
  * Thrown by deployment and account verification checks when a required CLI, account, or repository check fails.

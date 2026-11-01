@@ -1,0 +1,22 @@
+{
+  "id": 51207621,
+  "full_name": "bourneW/dsh-superagent-gitee-canary",
+  "html_url": "https://gitee.com/bourneW/dsh-superagent-gitee-canary.git",
+  "default_branch": "master",
+  "private": true,
+  "permission": {
+    "pull": true,
+    "push": true,
+    "admin": true
+  },
+  "owner": {
+    "id": 618074,
+    "login": "bourneW",
+    "name": "hhaa12321",
+    "type": "User"
+  },
+  "namespace": {
+    "id": 607999,
+    "path": "bourneW"
+  }
+}

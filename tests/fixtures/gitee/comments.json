@@ -1,0 +1,22 @@
+[
+  {
+    "id": 51958037,
+    "body": "Read-path canary comment: the adapter must preserve the issue display number IKS47K and the numeric native issue ID separately.",
+    "user": {
+      "id": 618074,
+      "login": "bourneW",
+      "name": "hhaa12321",
+      "type": "User"
+    },
+    "created_at": "2026-11-02T00:20:06+08:00",
+    "updated_at": "2026-11-02T00:20:06+08:00",
+    "target": {
+      "issue": {
+        "id": 34904144,
+        "number": "IKS47K",
+        "title": "Phase 3 read-path canary"
+      },
+      "pull_request": null
+    }
+  }
+]

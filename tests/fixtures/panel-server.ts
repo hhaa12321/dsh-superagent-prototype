@@ -22,7 +22,7 @@ import { feishuKind } from '../../src/sources/feishu.ts'
 import { githubKind } from '../../src/sources/github.ts'
 import type { Health } from '../../src/sources/host.ts'
 import type { SourceKind } from '../../src/sources/kind.ts'
-import { testDeployment } from './deployment.ts'
+import { testCapabilities, testDeployment } from './deployment.ts'
 
 export const MEMBER = 'ou_alice'
 const ALLOWED: Record<string, { id: string; name?: string }[]> = { feishu: [{ id: MEMBER, name: 'Alice' }], github: [{ id: 'alice' }] }
@@ -139,7 +139,7 @@ function sourceSettings(): SourceView[] {
       ? { rows: kind.policy.rows(config) } : {}, ...sync ? { sync } : {} }
     const repository = kind.kind === 'github' ? { id: 'github:101', provider: 'github', providerRepositoryId: '101',
       slug: 'acme/widgets', webUrl: 'https://github.com/acme/widgets', enabled: server.settings.sources.github?.enabled ?? true,
-      sourceId: 'github', account: 'agent-bot' } : undefined
+      sourceId: 'github', account: 'agent-bot', capabilities: testCapabilities } : undefined
     return { id: kind.kind, kind: kind.kind, title: kind.title, description: kind.description, installed: true,
       value: { enabled: server.settings.sources[kind.kind]?.enabled ?? true, config },
         revision: server.revisions[`source:${kind.kind}`] ?? 0,
@@ -159,7 +159,7 @@ function sourceStatuses(): SourceStatusRow[] {
     const feishu = kind.kind === 'feishu'
     return { id: kind.kind, title: kind.title, installed: true, enabled, state, health, ...problem ? { problem } : {},
       ...kind.kind === 'github' ? { repository: { id: 'github:101', provider: 'github', providerRepositoryId: '101', slug: 'acme/widgets',
-        webUrl: 'https://github.com/acme/widgets', enabled }, work: { openTickets: 1, queuedLaunches: 0 } } : {},
+        webUrl: 'https://github.com/acme/widgets', capabilities: testCapabilities, enabled }, work: { openTickets: 1, queuedLaunches: 0 } } : {},
       stats: { received: feishu ? 12 : 0, filtered: feishu ? 2 : 0, lastAt: '2026-09-23T00:00:00Z' },
       filtered: feishu ? [] : [{ id: 'e9', at: '2026-09-23T00:02:00Z', actor: actor('github', 'someone'), preview: 'looks wrong',
         reason: { code: 'source_disabled' } }],
@@ -175,7 +175,7 @@ const stateView = (): StateView => ({
 const settingsView = (): ApiResponse<'GET settings'> => ({
   policyVersion: 'abcdef1234567890',
   repositories: [{ id: 'github:101', provider: 'github', providerRepositoryId: '101', slug: 'acme/widgets',
-    webUrl: 'https://github.com/acme/widgets', enabled: true, sourceId: 'github', account: 'agent-bot' }],
+    webUrl: 'https://github.com/acme/widgets', capabilities: testCapabilities, enabled: true, sourceId: 'github', account: 'agent-bot' }],
   kinds: KINDS.map(kind => ({ kind: kind.kind, title: kind.title, description: kind.description,
     repositoryBound: kind.repositoryBound === true, createFields: (SETUP_FIELDS[kind.kind] ?? []).flatMap(key => kind.fields.filter(field => field.key === key)) })),
   blocks: { policy: { value: server.settings.policy, revision: server.revisions.policy ?? 0 },

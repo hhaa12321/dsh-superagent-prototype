@@ -1,11 +1,12 @@
 /** Probes repository and account CLIs, configures the worker execution environment and command shims, and tracks setup readiness. */
 import type { Context } from '@deepseek-ai/cordis'
 import { UserError } from '../core/index.ts'
-import { SETUP_FIELDS, resolveDeployment, resolveFeishuBot, workerProbe, type Deployment, type GithubSourceInput, type Machine } from '../deployment.ts'
+import { SETUP_FIELDS, resolveDeployment, resolveFeishuBot, workerProbe, type Deployment, type ForgeSourceInput, type Machine } from '../deployment.ts'
 import { agentVariables, applyEnvironment, verifyEnvironment, withoutDirectory, workerBin, writeEnvironment } from '../infra/environment.ts'
 import type { Settings, SettingsBlock } from '../policy.ts'
 import type { Store } from './store.ts'
 import { SetupError, type SetupProblem } from '../setup.ts'
+import { forgeCredentialId } from '../repository.ts'
 
 export interface SetupHost {
   readonly context: Context
@@ -23,10 +24,9 @@ const setupFields = (settings: Settings): string => JSON.stringify(Object.entrie
 }).sort(([a], [b]) => String(a).localeCompare(String(b))))
 export const setupChanged = (before: Settings, after: Settings): boolean => setupFields(before) !== setupFields(after)
 
-/** Every configured GitHub instance; a deployment with none fails setup with `repositoryUnset`. */
-function githubSources(settings: Settings): GithubSourceInput[] {
-  return Object.entries(settings.sources).filter(([, source]) => source.kind === 'github')
-    .map(([sourceId, source]) => ({ sourceId, kind: 'github', enabled: source.enabled, config: source.config }))
+/** Every configured Source instance; each forge-bound one resolves through its provider adapter, and adapters skip other kinds. */
+function forgeSources(settings: Settings): ForgeSourceInput[] {
+  return Object.entries(settings.sources).map(([sourceId, source]) => ({ sourceId, kind: source.kind, enabled: source.enabled, config: source.config }))
 }
 
 /**
@@ -73,7 +73,7 @@ export class Setup {
   restart(): void { setTimeout(this.host.restart, 0) }
   /**
    * Verify account CLIs for a modified source block before saving, ignoring setup errors belonging to other blocks.
-   * Returns the deployment a GitHub check resolved, so the caller can compare immutable repository binding identity.
+   * Returns the deployment the check resolved, so the caller can compare immutable repository binding identity.
    */
   async checkAccounts(block: SettingsBlock, settings: Settings): Promise<Deployment | undefined> {
     const { machine } = this.host
@@ -85,11 +85,15 @@ export class Setup {
         .catch((error: unknown) => { if (!(error instanceof SetupError) || error.place === id || error.place === kind) throw error })
       return undefined
     }
-    return resolveDeployment(machine, githubSources(settings), this.probe())
+    const resolved = await resolveDeployment(machine, forgeSources(settings), this.probe())
       .catch((error: unknown) => {
         if (!(error instanceof SetupError) || error.place === id || error.place === kind) throw error
         return undefined
       })
+    // A failure scoped to the edited Source refuses the save; another Source's problem leaves this block editable.
+    const problem = id === undefined ? undefined : resolved?.sourceProblems?.[id]
+    if (problem) throw new SetupError(problem.code, problem.values)
+    return resolved
   }
   async blockCommands(blocked: readonly string[]): Promise<void> {
     if (this.resolved) await writeEnvironment(this.resolved, blocked)
@@ -103,7 +107,7 @@ export class Setup {
   private async resolve(settings: Settings): Promise<Deployment> {
     const { context, machine, lifetime } = this.host
     const probe = this.probe()
-    const deployment = await resolveDeployment(machine, githubSources(settings), probe)
+    const deployment = await resolveDeployment(machine, forgeSources(settings), probe)
     const feishu = await resolveFeishuBot(machine, settings.sources.feishu?.config, probe).catch((error: unknown) => {
       if (!(error instanceof SetupError)) throw error
       this.feishuProblem = error.problem
@@ -111,9 +115,9 @@ export class Setup {
       return undefined
     })
     // Atomically replace the provider-resolved bindings and Source mapping: removed Sources leave no stale enabled binding.
-    const sources = githubSources(settings)
+    const sources = forgeSources(settings)
     this.host.store.repositories.reconcile(deployment.repositories, sources.flatMap(source => {
-      const binding = deployment.repositories.find(item => item.credentialId === `github:${source.sourceId}`)
+      const binding = deployment.repositories.find(item => item.credentialId === forgeCredentialId(source.kind ?? source.sourceId, source.sourceId))
       return binding ? [{ sourceId: source.sourceId, repositoryId: binding.id }] : []
     }))
     const resolved = { ...deployment, ...(feishu ? { feishu } : {}) }

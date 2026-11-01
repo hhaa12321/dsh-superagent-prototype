@@ -161,6 +161,18 @@ Authenticated Gitee access uses a personal access token supplied by the operator
 
 Gitee polling is the first event source. Webhooks are not required for the first end-to-end slice because they introduce public ingress, signature handling, replay storage, and deployment-specific configuration. Add webhook delivery only after polling semantics and durable cursors are proven.
 
+### Phase 3 implementation notes
+
+The Phase 3 adapter confirms these API v5 details against the prepared canary and public repositories:
+
+- Authenticated reads send `Authorization: token <token>`; the token is read from the environment variable the Source's credential reference names and never appears in a URL, log, database row, prompt, or worker environment.
+- Repository access is reported in `permission` as `{pull, push, admin}`; `html_url` ends in `.git` and is normalized to the web page.
+- Issue detail and comment endpoints take the string display `number` (`IKS47K`), not the numeric `id`; the numeric `id` is the Thread identity. The Issue list supports `since` by update time and `page`/`per_page` with `total_page`/`total_count` headers. The comment list applies `since` strictly after the timestamp, so the adapter pages it and applies the cursor's inclusive comparison itself; otherwise a comment updated at exactly the cursor time would be dropped.
+- Pull-request detail also takes the display `number`; reads by numeric `id` return 404. The record keeps `id` as the immutable identity and `number` as display metadata.
+- A comment changes its Issue's `updated_at`, so the Issue stream sees new comments even on older Issues; the source then reads that Issue's comments from its own cursor.
+- The account's own Issues and comments are stored as non-human Trigger facts (`human: false`, `meta.self`) so a prepared canary remains observable, but the gate refuses them before an Eval: self-authored events can never authorize work.
+- Capability facts on the binding report Issues/comments/PR reads as supported and Gitee PR creation, PR comments, reviews, and CI as unsupported until Phase 4 implements them.
+
 ## Delivery roadmap
 
 Each phase must leave the product runnable. A phase is not accepted merely because types compile; its stated end-to-end behavior must be demonstrated.

@@ -20,6 +20,7 @@ export async function sendGithub(host: Pick<SourceContext, 'commands'>, message:
   const binding = commands.repository
   if (!binding) throw new Error(`GitHub channel ${message.channel.thread} has no repository binding`)
   const credential = commands.deployment.credentials[binding.credentialId] ?? commands.deployment.github
+  if (!credential) throw new Error(`Repository ${binding.id} has no resolved GitHub credential`)
   const repository = binding.slug
   const number = Number(message.channel.address.number)
   if (!number) throw new Error('Missing GitHub reply target')

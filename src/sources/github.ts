@@ -10,9 +10,9 @@ import { branchCiTrigger, ciTrigger, commentTrigger, CommentSchema, githubAddres
 import { githubLink, sendGithub } from './github-channel.ts'
 import type { GithubComment, PullRef } from './github-trigger.ts'
 import { observePull, pullHost, pullsOf, readPull, type Pull } from './github-pull.ts'
-import { health, sourceContext, type Health, type SourceContext } from './host.ts'
+import { health, sourceContext, type SourceContext } from './host.ts'
 import { KV } from '../kv.ts'
-import { cursorAt, pause, POLL_HORIZON_MS, pollThreads as pollEach } from './poll.ts'
+import { cursorAt, pause, POLL_HORIZON_MS, pollFailure, pollThreads as pollEach } from './poll.ts'
 import type { Localized, SourceKind } from './kind.ts'
 import type { GithubCredential } from '../deployment.ts'
 import { z } from 'zod'
@@ -103,13 +103,13 @@ export const githubKind: SourceKind<GithubConfig> = {
       // The ticket's own binding decides the repository; a Trigger of another binding can never leak its slug into this environment.
       const own = !!trigger && (trigger.repositoryId ?? null) === (binding?.id ?? null)
       const number = own ? Number(trigger!.meta.number) || 0 : 0
-      const credential = binding ? deployment.credentials[binding.credentialId] ?? deployment.github : deployment.github
-      return { DSH_SUPERAGENT_GITHUB_REPOSITORY: binding?.slug ?? '', DSH_SUPERAGENT_GITHUB_ACCOUNT: credential.login,
-        DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL: credential.noreply, DSH_SUPERAGENT_GITHUB_NUMBER: number ? String(number) : '',
+      const credential = binding ? deployment.credentials[binding.credentialId] : deployment.github
+      return { DSH_SUPERAGENT_GITHUB_REPOSITORY: binding?.slug ?? '', DSH_SUPERAGENT_GITHUB_ACCOUNT: credential?.login ?? '',
+        DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL: credential?.noreply ?? '', DSH_SUPERAGENT_GITHUB_NUMBER: number ? String(number) : '',
         DSH_SUPERAGENT_GITHUB_PR_HEAD: number && trigger?.meta.isPr === true ? `refs/pull/${number}/head` : '' }
     },
   },
-  facts: (deployment): Record<string, Localized | string> => deployment ? {
+  facts: (deployment): Record<string, Localized | string> => deployment?.github ? {
     cli: { zh: `当前账号 @${deployment.github.login}`, en: `Current account @${deployment.github.login}` },
   } : {},
 }
@@ -142,6 +142,8 @@ export function apply(ctx: Context): void {
  * loops are unaffected.
  */
 export async function pollWhenEnabled(ctx: SourceContext, signal?: AbortSignal): Promise<number> {
+  // A failed setup leaves this binding unresolved; its card states the problem and this loop reads nothing new.
+  if (ctx.config<GithubConfig>() && !ctx.repository) { ctx.report('github', health('paused', 'setupPending')); return 60 }
   return ctx.config<GithubConfig>() ? pollRound(ctx, signal) : pollEnabledTickets(ctx, signal)
 }
 /** Polls only what open Tickets of this binding need while the binding takes in no new work. */
@@ -174,10 +176,7 @@ function refOf(ctx: SourceContext): GithubRef {
   return { sourceId: ctx.sourceId, repositoryId: bindingOf(ctx).id }
 }
 const threadKeyOf = (ctx: SourceContext, native: string): string => `${ctx.sourceId}:${native}`
-/** Returns an error health once `failures` consecutive polls fail, or undefined so a single network interruption stays quiet. */
-export function pollFailure(failures: number, threshold: number, error: unknown): Health | undefined {
-  return failures >= threshold ? health('error', 'pollFailures', { count: String(failures), error: String(error) }) : undefined
-}
+export { pollFailure } from './poll.ts'
 async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
   let interval = 60
   let failures = 0
