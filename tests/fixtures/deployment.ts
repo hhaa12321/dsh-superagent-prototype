@@ -15,7 +15,7 @@ export const testMachine = (overrides: Partial<Machine> = {}): Machine => ({
   admissionContextTimeoutMs: reference(15000), ...overrides,
 })
 export const testCapabilities: ForgeCapabilities = { repository: 'read-write', identity: true, issues: { read: true, comment: true },
-  pulls: { read: true, create: true, comment: true, reviews: true }, ci: true }
+  pulls: { read: true, create: true, comment: true, reviews: true }, ci: true, execution: true }
 export const testGithub: GithubCredential = { cli: '/bin/false', login: 'agent-bot', noreply: '7+agent-bot@users.noreply.github.com' }
 export const testRepository: RepositoryBinding = { id: 'github:101', provider: 'github', providerRepositoryId: '101', slug: 'acme/widgets',
   webUrl: 'https://github.com/acme/widgets', credentialId: 'github:github', capabilities: testCapabilities, enabled: true }

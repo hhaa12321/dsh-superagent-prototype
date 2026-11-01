@@ -22,7 +22,7 @@ const TIMEOUT_MS = 30_000
  */
 const GITEE_CAPABILITIES: ForgeCapabilities = {
   repository: 'read-write', identity: true, issues: { read: true, comment: false },
-  pulls: { read: true, create: false, comment: false, reviews: false }, ci: false,
+  pulls: { read: true, create: false, comment: false, reviews: false }, ci: false, execution: false,
 }
 const GiteeUserSchema = z.looseObject({ login: z.string(), id: z.number().int().positive().optional(), name: z.string().nullish() })
 const GiteeRepositorySchema = z.looseObject({

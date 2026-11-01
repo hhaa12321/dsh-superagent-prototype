@@ -65,7 +65,7 @@ describe('setup', () => {
     expect(deployment.repositories).toEqual([{ id: 'github:101', provider: 'github', providerRepositoryId: '101', slug: 'acme/widgets',
       webUrl: 'https://github.com/acme/widgets', credentialId: 'github:github', enabled: true, capabilities: {
         repository: 'read-write', identity: true, issues: { read: true, comment: true },
-        pulls: { read: true, create: true, comment: true, reviews: true }, ci: true } }])
+        pulls: { read: true, create: true, comment: true, reviews: true }, ci: true, execution: true } }])
     expect(deployment.credentials['github:github']).toEqual(deployment.github)
     expect(deployment).not.toHaveProperty('feishu')
     // A renamed repository is still resolved by its old name; the binding keeps GitHub's immutable ID and current full_name.

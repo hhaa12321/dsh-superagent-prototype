@@ -171,7 +171,7 @@ The Phase 3 adapter confirms these API v5 details against the prepared canary an
 - Pull-request detail also takes the display `number`; reads by numeric `id` return 404. The record keeps `id` as the immutable identity and `number` as display metadata.
 - A comment changes its Issue's `updated_at`, so the Issue stream sees new comments even on older Issues; the source then reads that Issue's comments from its own cursor.
 - The account's own Issues and comments are stored as non-human Trigger facts (`human: false`, `meta.self`) so a prepared canary remains observable, but the gate refuses them before an Eval: self-authored events can never authorize work.
-- Capability facts on the binding report Issues/comments/PR reads as supported and Gitee PR creation, PR comments, reviews, and CI as unsupported until Phase 4 implements them.
+- Capability facts on the binding report Issues/comments/PR reads as supported and Gitee PR creation, PR comments, reviews, CI, and ticket execution as unsupported until Phase 4 implements them. The core consults the binding's `execution` capability before accepting work: a Gitee Trigger is assessed and then recorded as an `executionUnsupported` ignore, so no Ticket or runnable Assignment is created. Phase 4 enables execution by turning that adapter capability on with the complete write path.
 
 ## Delivery roadmap
 

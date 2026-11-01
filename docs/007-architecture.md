@@ -360,7 +360,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/infra/paths.ts` | The package's root, where packaged files are |
 | `src/infra/text.ts` | Word counts and the chat message limit, `fill` and `sameName` |
 | `src/infra/health.ts` | The `HealthBoard`, every part's health entry, each claimed by its one writer |
-| `src/forge/capabilities.ts` | The capability facts a forge adapter reports, their schema on a RepositoryBinding, and the supported/unsupported query the panel uses |
+| `src/forge/capabilities.ts` | The capability facts a forge adapter reports, their schema on a RepositoryBinding, and the supported/unsupported query the panel uses; `execution` says whether the provider's complete write path lets a Ticket run |
 | `src/forge/config.ts` | The setup-read Source configuration of each forge: a GitHub repository and CLI, and a Gitee repository and token environment variable name |
 | `src/forge/ports.ts` | The capability boundary: repository resolution and identity/access, Issue/comment reads, pull-request reads, and presentation; provider-neutral records keep native IDs apart from display numbers |
 | `src/forge/registry.ts` | `ForgeRegistry`, one built-in adapter per provider |
@@ -411,6 +411,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 ### Forge adapters
 
 `src/forge/` is the boundary between the domain and a provider's protocol. A `RepositoryBinding` names its `provider`; setup asks that provider's adapter to resolve the configured slug into the immutable repository ID, authenticate the account its credential reference names, verify push access, and report capability facts, which are persisted with the binding. Reads go through narrow ports (`listIssues`, `readIssue`, `listComments`, `listPulls`, `readPull`) whose records keep every native identity: Gitee's numeric Issue `id` is the Thread identity while its string `number` is display metadata, a pull request keeps its numeric `id` apart from its display `number`, and a comment is identified by its native ID. Unsupported operations, such as Gitee reviews and CI, are reported as capability facts instead of failing a generic read.
+
+The `execution` capability gates acceptance provider-neutrally: `EngineOptions.executionAllowed` reads the target binding's capability, and an accept for a binding that reports `false` is recorded as an `ignore` decision with `executionUnsupported`, so no Ticket or runnable Assignment exists. Gitee reports `false` in Phase 3; Phase 4 flips its adapter to `true` once the complete write path exists.
 
 The two built-in adapters do not share a provider-shaped API. GitHub reads through the binding's `Commands` (the agent's `gh`); Gitee reads over HTTP with Node's `fetch`, the token from the credential reference's environment variable in an `Authorization` header, `AbortSignal`, `URL`, and `zod` validation at the boundary. The Gitee token is never placed in a URL, persisted, logged, or passed to workers.
 

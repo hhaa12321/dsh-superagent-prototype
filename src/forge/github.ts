@@ -12,7 +12,7 @@ import type { ForgeCapabilities } from './capabilities.ts'
 
 const GITHUB_CAPABILITIES: ForgeCapabilities = {
   repository: 'read-write', identity: true, issues: { read: true, comment: true },
-  pulls: { read: true, create: true, comment: true, reviews: true }, ci: true,
+  pulls: { read: true, create: true, comment: true, reviews: true }, ci: true, execution: true,
 }
 const GithubUserSchema = z.looseObject({ login: z.string(), id: z.number().int().positive().optional(), type: z.string().optional() }).nullable()
   .transform(user => user ?? { login: 'ghost', type: 'User' })

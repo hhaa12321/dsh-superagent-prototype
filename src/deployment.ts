@@ -105,8 +105,6 @@ function parsed<T>(schema: z.ZodType<T>, text: string): T | undefined {
 }
 /** A Source instance's config as setup reads it; `kind` defaults to the instance ID and selects the forge adapter. */
 export interface ForgeSourceInput { sourceId: string; kind?: string; enabled: boolean; config: unknown; repositoryId?: string | null }
-/** @deprecated Kept for callers that still name the GitHub shape; every forge Source resolves through the same input. */
-export type GithubSourceInput = ForgeSourceInput
 /**
  * Resolve every configured repository-bound Source through its provider's forge adapter. Each enabled instance resolves
  * exactly one RepositoryBinding whose stable ID is the provider's immutable repository ID; a slug is only a display name

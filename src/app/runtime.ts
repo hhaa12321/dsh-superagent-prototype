@@ -152,6 +152,8 @@ export class Runtime extends Service implements SourceHost {
         // Acceptance binds a repository-less request to the one enabled binding, and records it on the ticket.
         // A Thread reference resolves its Source instance's binding before the Thread exists, so a worker cannot follow another repository's Thread.
         threadRepository: ref => sources.bindingOf(ref.source)?.id ?? ref.repositoryId ?? null,
+        // The binding's adapter says whether its write path lets a Ticket run; a missing binding fails closed.
+        executionAllowed: repositoryId => repositoryId === null ? true : store.repositories.get(repositoryId)?.capabilities.execution === true,
         repositoryExists: repositoryId => !!store.repositories.get(repositoryId),
         emit: event => {
           // Notify the main Session only about domain events it did not initiate itself.

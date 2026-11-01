@@ -69,7 +69,7 @@ function fakeForge(): ForgeAdapter {
   return {
     provider: 'fake',
     capabilities: { repository: 'read-write', identity: true, issues: { read: true, comment: true },
-      pulls: { read: true, create: false, comment: false, reviews: false }, ci: false },
+      pulls: { read: true, create: false, comment: false, reviews: false }, ci: false, execution: true },
     presentation: { issueUrl: (repository, number) => `${repository.webUrl}/issues/${number}`, pullUrl: (repository, number) => `${repository.webUrl}/pulls/${number}`,
       accountUrl: login => `https://forge.test/${login}` },
     async resolveRepository() {
@@ -152,6 +152,7 @@ describe('forge adapter contract', () => {
     expect(resolution!.capabilities.pulls.create).toBe(false)
     expect(resolution!.capabilities.pulls.reviews).toBe(false)
     expect(resolution!.capabilities.ci).toBe(false)
+    expect(resolution!.capabilities.execution).toBe(false)
     // The token travels in the Authorization header only: never in a URL, the resolution, or an error message.
     expect(http.urls.every(url => !url.href.includes(token))).toBe(true)
     expect(JSON.stringify(resolution)).not.toContain(token)

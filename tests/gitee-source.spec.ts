@@ -10,7 +10,7 @@ import { Store } from '../src/app/store.ts'
 import { sourceContextOf, type SourceContextDeps } from '../src/app/source-context.ts'
 import { SourceRegistry, healthKey } from '../src/sources/registry.ts'
 import { HealthBoard } from '../src/infra/health.ts'
-import { giteeKind, pollWhenEnabled } from '../src/sources/gitee.ts'
+import { giteeIssueTrigger, giteeKind, pollWhenEnabled } from '../src/sources/gitee.ts'
 import { giteeForgeAdapter } from '../src/forge/gitee.ts'
 import { resolveDeployment } from '../src/deployment.ts'
 import { repositoryId, type RepositoryBinding } from '../src/repository.ts'
@@ -56,6 +56,7 @@ interface Harness {
   deployment: ReturnType<typeof testDeployment>
   engine: Engine
   candidates: Candidate[]
+  starts: string[]
   ctx: (id: string) => SourceContext
   close(): void
 }
@@ -84,14 +85,17 @@ function harness(options: { accounts?: Record<string, string>; observePulls?: bo
     giteeCredentials: Object.fromEntries(bindings.map(item => [item.binding.credentialId, { tokenEnv: 'GITEE_TOKEN',
       login: accounts[item.sourceId]!, userId: item.sourceId === 'gitee-a' ? '618074' : '700001' }])) })
   const candidates: Candidate[] = []
+  const starts: string[] = []
   const assessor: Assessor = { request: candidate => { candidates.push(candidate) } }
   const engine = new Engine({ repo: store, scope: sources, policy: () => settingsPolicy(store.settings(), sources), assessor,
-    executor: { start: vi.fn(), deliver: vi.fn(), stop: vi.fn() }, outbox: { send: vi.fn(), status: () => undefined, withdraw: vi.fn() },
+    executor: { start: ticket => { starts.push(ticket.id) }, deliver: vi.fn(), stop: vi.fn() }, outbox: { send: vi.fn(), status: () => undefined, withdraw: vi.fn() },
     threadRepository: ref => sources.bindingOf(ref.source)?.id ?? ref.repositoryId ?? null, repositoryExists: id => !!store.repositories.get(id),
+    // The Runtime wires the same provider-neutral capability check; a Gitee binding reports execution false in Phase 3.
+    executionAllowed: id => id === null ? true : store.repositories.get(id)?.capabilities.execution === true,
     emit: () => {}, prepareTicket: ticket => ticket })
   const deps: SourceContextDeps = { store, engine, outbox: { send: vi.fn() }, commands: testCommands(() => deployment, {}, undefined, null),
     sources, deployment, ready: Promise.resolve(), configured: () => true, receive: trigger => engine.receive(trigger) }
-  return { directory, database, store, board, sources, deployment, engine, candidates, ctx: id => sourceContextOf(deps, giteeKind, id),
+  return { directory, database, store, board, sources, deployment, engine, candidates, starts, ctx: id => sourceContextOf(deps, giteeKind, id),
     close: () => { store.close(); rmSync(directory, { recursive: true, force: true }) } }
 }
 const seed = (store: Store, binding: RepositoryBinding, sourceId = 'gitee-a') =>
@@ -162,6 +166,28 @@ describe('Gitee read path', () => {
       expect(threadKey(pulls[0]!.threads[0]!)).toBe('gitee-a:pull:1446764')
       expect(h.store.tickets.open()).toEqual([])
       expect(h.deployment.repositories[0]!.capabilities.pulls).toMatchObject({ create: false, comment: false, reviews: false })
+    } finally { h.close() }
+  })
+
+  it('does not accept a Gitee Trigger whose binding has no execution capability, so no Assignment is runnable', () => {
+    const h = harness()
+    try {
+      // Phase 3's Gitee adapter reports execution unsupported; a GitHub adapter reports it supported.
+      expect(A.capabilities.execution).toBe(false)
+      expect(giteeForgeAdapter.capabilities.execution).toBe(false)
+      const issue = { nativeId: '9001', displayNumber: 'IKS9001', threadId: '9001', title: 'Fix the login',
+        body: '@agent-bot please fix the login', author: { providerUserId: 'u-alice', login: 'alice' }, createdAt: at, updatedAt: at,
+        webUrl: `${A.webUrl}/issues/IKS9001`, comments: 0 }
+      const trigger = giteeIssueTrigger(issue, 'agent-bot', { sourceId: 'gitee-a', repositoryId: A.id })
+      h.engine.receive(trigger)
+      h.engine.evaluateDue()
+      const candidate = h.candidates.at(-1)!
+      const decision = h.engine.decide(trigger.id, { kind: 'accept', title: 'Fix the login', scope: 'the login form', reason: 'asked',
+        evalId: candidate.evalId })
+      expect(decision).toMatchObject({ kind: 'ignore', reason: [{ code: 'executionUnsupported' }] })
+      expect(decision.ticketId).toBeUndefined()
+      expect(h.store.tickets.list()).toEqual([])
+      expect(h.starts).toEqual([])
     } finally { h.close() }
   })
 
