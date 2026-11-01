@@ -230,9 +230,10 @@ export class DshExecutor implements Executor {
   constructor(private readonly host: ExecutorHost) {
     this.slots = new WorkerSlots(() => host.store.tickets.open().filter(ticket => this.running(ticket)).map(ticket => ticket.id),
       () => host.store.settings().executor.maxWorkers)
-    // Each launch reserves a worker slot so launches run concurrently while slots are free.
+    // Each launch reserves a worker slot so launches run concurrently while slots are free. The lane is the Ticket's
+    // RepositoryBinding, so launches of one repository cannot starve another's while the global worker limit holds.
     host.effects.handle('launch', payload => this.launchQueued(payload), { limit: () => host.paused() ? 0 : this.slots.launches(),
-      retry: [5000, 300_000] })
+      lane: payload => host.store.tickets.get(payload.ticketId)?.repositoryId ?? 'no-repository', retry: [5000, 300_000] })
     // Failed input deliveries are recorded on the ticket itself rather than reported through the `delivery` effect health entry (`quiet: true`).
     host.effects.handle('delivery', payload => this.deliverQueued(payload.ticketId), { limit: () => host.paused() ? 0 : 4, quiet: true })
   }

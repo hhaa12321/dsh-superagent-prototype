@@ -8,7 +8,7 @@ Use this guide to install, configure and operate dsh-superagent. It covers accou
 - **An agent GitHub account.** The agent comments, pushes branches and opens pull requests as this account, through a GitHub CLI signed in only as that account.
 - **Optional:** a Feishu bot for chat requests.
 
-Plugin configuration holds the state directory and machine limits. Use the panel for everything else: Sources for the repository and accounts, Policy for allowed lists, and Execution for worker directories and commands. This version starts from a fresh state directory: a database from an earlier version is refused, so move it aside rather than pointing the new build at it.
+Plugin configuration holds the state directory and machine limits. Use the panel for everything else: Sources for repository bindings and accounts, Policy for allowed lists, and Execution for worker directories and commands. Add each GitHub repository as its own Source instance; every enabled instance owns one RepositoryBinding and polls independently. This version starts from a fresh state directory: a database from an earlier version is refused, so move it aside rather than pointing the new build at it.
 
 ### Permissions and isolation
 
@@ -199,17 +199,22 @@ A refusal has a status and `error`, its English text:
 
 The blocks:
 
-- `source:github`, `source:feishu`: `{"enabled": true, "config": {…}}`. GitHub's config has `repository` and `cli`, and the switches `observeIssues`, `observePulls`, `observeComments` and `observeCi`, off by default, which receive every new Issue, new pull request and comment in the repository and the default branch's CI; Feishu's has `cli`, `chats` as `[{"chatId": "oc_…", "name": "…", "listen": "mentions"}]` (or `"all"`), `directMessages`, and `otherChats` as `"none"` or `"mentions"`.
-- `policy`: `{"rules": […], "sources": {"github": {"allowed": [{"id": "<login>"}], "bots": [{"id": "dependabot[bot]"}]}, "feishu": {"allowed": [{"id": "ou_…", "name": "…"}], "syncChat": "oc_…", "admission": {"oc_…": {"unlistedAddressed": "explicit"}}}}}`. `bots` lists the bots whose messages may become inferred candidates. An `admission` row is keyed by chat id, `other` or `direct` for Feishu, and by `issues`, `pulls`, `comments` or `ci` for GitHub; an unset cell takes its default (see [002 Authorization](002-authorization.md)).
+- `source:<source id>`, such as `source:github-alpha` or `source:feishu`: `{"enabled": true, "config": {…}}`. A GitHub Source instance's config has `repository` and `cli`, and the switches `observeIssues`, `observePulls`, `observeComments` and `observeCi`, off by default, which receive every new Issue, new pull request and comment in that repository and the default branch's CI. Feishu's has `cli`, `chats` as `[{"chatId": "oc_…", "name": "…", "listen": "mentions"}]` (or `"all"`), `directMessages`, and `otherChats` as `"none"` or `"mentions"`. The panel's **Add repository binding** derives an instance ID from the slug unless the operator supplies one.
+- `POST sources` with `{"id": "github-acme-widgets", "kind": "github", "enabled": true, "config": {"repository": "acme/widgets", "cli": "gh-agent"}}` creates a Source instance; `id` is optional and derived from the repository when omitted. The save verifies the repository and push access, persists structured binding data only, and returns `restarting: true` so setup can resolve the binding.
+- `policy`: `{"rules": […], "sources": {"github-acme-widgets": {"allowed": [{"id": "<login>"}], "bots": [{"id": "dependabot[bot]"}]}, "feishu": {"allowed": [{"id": "ou_…", "name": "…"}], "syncChat": "oc_…", "admission": {"oc_…": {"unlistedAddressed": "explicit"}}}}}`. Each Source instance has its own part, so one repository's list cannot authorize another's. `bots` lists the bots whose messages may become inferred candidates. An `admission` row is keyed by chat id, `other` or `direct` for Feishu, and by `issues`, `pulls`, `comments` or `ci` for GitHub; an unset cell takes its default (see [002 Authorization](002-authorization.md)).
 - `eval`: `mode`, `timeoutSeconds` and `model`.
 - `executor`: `model`, `maxWorkers`, `directory`, `prepare` and `blockedCommands`. The processing pause is a setting of its own, `paused`, which `POST executor/pause` sets.
 
-Changing a repository or CLI runs the corresponding setup check first. A failed check returns 400 with details in `setup`. A successful account change, or any save while setup is pending, returns `restarting: true`. The API is temporarily unavailable while the application restarts.
+Changing a repository or CLI runs the corresponding setup check first. A failed check returns 400 with details in `setup`. A successful account change, adding a Source instance, or any save while setup is pending returns `restarting: true`. Switching an existing GitHub binding on or off saves without a restart: a disabled binding takes in no new Issues, pull requests, comments or CI, while its already accepted Tickets keep their workers and their pull requests and subscribed Threads stay observed so they can finish; the other bindings keep polling. The API is temporarily unavailable while the application restarts.
 
 ```sh
 api=http://127.0.0.1:3082/orchestrator/api
-rev=$(curl -s -H 'x-orchestrator-request: 1' $api/settings | jq '.sources[] | select(.id == "github") | .revision')
-curl -s -X PUT -H 'x-orchestrator-request: 1' -H 'content-type: application/json' $api/settings/source:github \
+# Add each repository as its own Source instance; the ID is derived from the slug when omitted.
+curl -s -X POST -H 'x-orchestrator-request: 1' -H 'content-type: application/json' $api/sources \
+  -d "{\"kind\": \"github\", \"config\": {\"repository\": \"acme/widgets\", \"cli\": \"$HOME/.local/bin/gh-agent\"}}"
+# Edit one instance against its own block revision.
+rev=$(curl -s -H 'x-orchestrator-request: 1' $api/settings | jq '.sources[] | select(.id == "github-acme-widgets") | .revision')
+curl -s -X PUT -H 'x-orchestrator-request: 1' -H 'content-type: application/json' $api/settings/source:github-acme-widgets \
   -d "{\"value\": {\"enabled\": true, \"config\": {\"repository\": \"acme/widgets\", \"cli\": \"$HOME/.local/bin/gh-agent\"}}, \"revision\": $rev}"
 ```
 

@@ -73,6 +73,14 @@ export function storeReads(db: DatabaseSync) {
   droppedReplies: (limit = 20): Dropped[] =>
     values('SELECT value FROM outbox WHERE dropped IS NOT NULL ORDER BY dropped DESC LIMIT ?', limit),
   droppedSince: (since: string): number => Number(db.prepare('SELECT COUNT(*) AS n FROM outbox WHERE dropped >= ?').get(since)?.n ?? 0),
+  /** Launches waiting in the effect queue, with the Ticket each belongs to, for per-binding queued-work counts. */
+  pendingLaunches: (): { key: string; ticketId: string }[] => db.prepare("SELECT key, value FROM effect WHERE kind = 'launch'").all()
+    .flatMap(row => {
+      try {
+        const value = JSON.parse(String(row.value)) as { ticketId?: unknown }
+        return typeof value.ticketId === 'string' ? [{ key: String(row.key), ticketId: value.ticketId }] : []
+      } catch { return [] }
+    }),
   subscribedThreads: (source?: string): Thread[] => source
     ? values('SELECT value FROM thread WHERE subscribed = ? ORDER BY rowid', source)
     // Force the partial index so SQLite does not scan the entire table in rowid order.

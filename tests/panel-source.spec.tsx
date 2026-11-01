@@ -83,7 +83,12 @@ it('renders each Source\'s settings from its kind\'s fields and saves one Source
       directMessages: false } } } })
   expect(server.settings.sources.feishu!.config).toMatchObject({ directMessages: false })
   const github = all('.dt-card')[1]!
-  await click('运行来源：GitHub')
+  // The card inspects the persisted binding: immutable ID, slug, provider, account and Source instance, without credentials.
+  expect(github.textContent).toContain('github:101')
+  expect(github.textContent).toContain('acme/widgets')
+  expect(github.textContent).toContain('@agent-bot')
+  expect(github.textContent).toContain('github')
+  await click('运行来源：acme/widgets')
   server.revisions['source:github'] = 5
   await act(async () => { github.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) }); await settle()
   // Another save changed nothing this draft changed, so the draft moves onto the newer revision and saves from there.
@@ -91,6 +96,23 @@ it('renders each Source\'s settings from its kind\'s fields and saves one Source
   await act(async () => { github.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) }); await settle()
   expect(server.settings.sources.github).toMatchObject({ enabled: false })
   expect(server.revisions['source:github']).toBe(6)
+})
+
+it('adds one more repository binding from the Source settings and asks for the restart that resolves it', async () => {
+  await mount()
+  await click(zh['tab.source'])
+  await click(find(zh['tab.settings'], '.dt-status-head button'))
+  const add = all('.dt-form > .dt-block')[0]!
+  expect(add.textContent).toContain(zh.sourceAddTitle)
+  await type(field<HTMLInputElement>('新绑定：监听的仓库'), 'acme/gadgets')
+  await type(field<HTMLInputElement>('新绑定：智能体的 GitHub CLI'), '/opt/bin/gh-agent')
+  await type(field<HTMLInputElement>(zh.sourceAddId), 'github-gadgets')
+  await act(async () => { add.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) }); await settle()
+  expect(server.requests.find(request => request.path === 'sources' && request.method === 'POST')).toMatchObject({ method: 'POST', body: { id: 'github-gadgets',
+    kind: 'github', enabled: true, config: { repository: 'acme/gadgets', cli: '/opt/bin/gh-agent' } } })
+  expect(document.querySelector('.dt-toast')?.textContent).toBe(zh.savedRestarting)
+  // The server binds the repository at the requested restart; until then the form is cleared for the next binding.
+  expect(add.querySelector<HTMLInputElement>('#dt-source-add-id')?.value).toBe('')
 })
 
 it('shows the account each CLI signs in as, and keeps a saved CLI on screen while dsh-superagent restarts', async () => {

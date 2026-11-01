@@ -138,6 +138,30 @@ export class Settings {
     return { block, revision: store.blockRevision(block as SettingsSave), value }
   }
   /**
+   * Adds one Source instance and returns its generated or supplied ID. A repository-bound kind (GitHub) resolves exactly
+   * one RepositoryBinding at the restart this save requests; its configuration is verified before anything is persisted.
+   * @throws UserError (`sourceNotInstalled`, `sourceExists`) or a setup/account check failure.
+   */
+  async create(input: unknown, origin: SettingsOrigin): Promise<{ id: string; revision: number; restarting: boolean }> {
+    const request = z.object({ id: z.string().regex(/^[a-z][a-z0-9-]*$/).optional(), kind: z.string().regex(/^[a-z][a-z0-9-]*$/),
+      enabled: z.boolean().default(true), config: z.unknown() }).strict().parse(input)
+    if (origin !== 'panel') throw new UserError('panelOnlyAccounts')
+    if (!this.host.sources.kind(request.kind)) throw new UserError('sourceNotInstalled', { source: request.kind })
+    const id = request.id ?? this.freeId(request.kind, request.config)
+    if (this.host.store.settings().sources[id]) throw new UserError('sourceExists', { source: id })
+    const result = await this.save(`source:${id}` as SettingsBlock, { kind: request.kind, enabled: request.enabled, config: request.config }, 0, origin)
+    return { id, revision: result.revision, restarting: result.restarting }
+  }
+  /** A free Source instance ID derived from the configured repository, such as `github-acme-widgets`, or a numbered fallback. */
+  private freeId(kind: string, config: unknown): string {
+    const repository = (config as { repository?: unknown } | undefined)?.repository
+    const suffix = typeof repository === 'string' ? repository.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') : ''
+    const base = suffix ? `${kind}-${suffix}` : kind
+    const sources = this.host.store.settings().sources
+    if (!sources[base]) return base
+    for (let index = 2; ; index++) if (!sources[`${base}-${index}`]) return `${base}-${index}`
+  }
+  /**
    * Validates and saves one settings block against its `revision`; a no-op save records no new revision, a changed policy
    * version notifies affected open tickets, and changing a setup-read field (`SETUP_FIELDS`, such as an account CLI) or any
    * change saved while waiting for setup (`!this.host.setup.configured()`) restarts `dsh-superagent` so setup runs again.
@@ -154,7 +178,15 @@ export class Settings {
     const kind = block.startsWith('source:') ? 'source' : block
     if (!(kind in BLOCKS)) throw new UserError('unknownBlock', { block })
     const rules = BLOCKS[kind as keyof typeof BLOCKS]
-    if (kind === 'source' && !sources.kindOf(id)) throw new UserError('sourceNotInstalled', { source: id })
+    if (kind === 'source') {
+      const stored = sources.kindOf(id)
+      const requested = (value as { kind?: unknown } | undefined)?.kind
+      // Creating an instance names its installed kind; an existing instance keeps the implementation it was created with.
+      if (stored) { if (requested !== undefined && requested !== stored.kind) throw new UserError('sourceKindFixed', { source: id }) }
+      else if (typeof requested !== 'string' || !sources.kind(requested)) {
+        throw new UserError('sourceNotInstalled', { source: typeof requested === 'string' ? requested : id })
+      }
+    }
     const parsed = rules.parse(value, sources, id)
     const current = store.settings()
     const candidate = rules.merge(current, parsed, id)
@@ -177,11 +209,16 @@ export class Settings {
     const restarting = setupChanged(old, settings) || !this.host.setup.configured()
     const before = policyVersion(old), after = policyVersion(settings)
     const scope = (version: SettingsValue) => ({
-      scope: (input: { source: string; meta: Record<string, unknown> }) => this.host.sources.scope(input, version) })
+      scope: (input: { source: string; meta: Record<string, unknown> }) => this.host.sources.scope(input, version),
+      repositoryOf: (source: string) => this.host.sources.repositoryOf(source) })
     const effects = before === after ? new Map() : policyEffects(store.tickets.open(), old, SettingsSchema.parse(settings), scope)
     const notified = [...effects.keys()]
     store.atomic(() => {
       store.saveSettings(SettingsSchema.parse(settings), { source: origin, block, policyVersion: after, policyChanged: before !== after, notified })
+      // The persisted binding of a repository-bound instance follows the instance's own switch, so the panel, views and
+      // repository-scoped commands agree on whether the binding is enabled without waiting for the next setup run.
+      const bindingId = kind === 'source' ? store.repositories.ofSource(id) : undefined
+      if (bindingId) store.repositories.setEnabled(bindingId, settings.sources[id]!.enabled)
       if (origin !== 'tool') sessions.notify(...settingsNotice(block, changedPaths(old, settings)))
       if (before !== after) engine.policyChanged(before, after, effects)
     })

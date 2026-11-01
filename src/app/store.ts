@@ -185,6 +185,13 @@ export class Store implements Repositories {
     /** Every binding in ID order. */
     list: (): RepositoryBinding[] => this.db.prepare('SELECT value FROM repository ORDER BY id').all().map(row => JSON.parse(String(row.value)) as RepositoryBinding),
     save: (binding: RepositoryBinding): void => { this.db.prepare('INSERT INTO repository VALUES (?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value').run(binding.id, JSON.stringify(binding)) },
+    /** Switches a persisted binding on or off without recreating it, keeping every Ticket that references it. */
+    setEnabled: (id: string, enabled: boolean): void => {
+      const row = this.db.prepare('SELECT value FROM repository WHERE id=?').get(id)
+      if (!row) return
+      const binding = JSON.parse(String(row.value)) as RepositoryBinding
+      if (binding.enabled !== enabled) this.db.prepare('UPDATE repository SET value=? WHERE id=?').run(JSON.stringify({ ...binding, enabled }), id)
+    },
     /** Binds a Source instance to exactly one RepositoryBinding, or removes its binding when `repositoryId` is undefined. */
     bind: (sourceId: string, repositoryId: string | undefined): void => {
       if (repositoryId === undefined) this.db.prepare('DELETE FROM source_binding WHERE source=?').run(sourceId)

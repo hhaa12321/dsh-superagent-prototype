@@ -34,7 +34,7 @@ function harness(settings: Settings) {
   const assessor: Assessor = { request: candidate => { requests.push(candidate) } }
   const executor: Executor = { start: vi.fn(), deliver: vi.fn(), stop: vi.fn() }
   const outbox = { send: vi.fn(), status: () => undefined, withdraw: vi.fn() }
-  const policy: Policy = { version: 'v1', paused: false, evalTimeoutMs: 60_000,
+  const policy: Policy = { version: 'v1', versionFor: () => 'v1', paused: false, evalTimeoutMs: 60_000,
     gate: () => ({ admissible: true, strength: 'explicit', basis: { via: 'listed' } }), revalidate: () => true, admitsInferred: () => true }
   const scope: SourceScope = { scope: () => ({ listened: true, observed: false }) }
   const engine = new Engine({ repo, scope, policy: () => policy, assessor, executor, outbox,

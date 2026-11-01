@@ -17,7 +17,7 @@ import type { Machine } from '../src/deployment.ts'
 import { SCHEMA_VERSION, Store } from '../src/app/store.ts'
 import { TextCache } from '../src/app/cache.ts'
 import { KV } from '../src/kv.ts'
-import { SettingsSchema, policyVersion, type SettingsOrigin } from '../src/policy.ts'
+import { SettingsSchema, policyVersion, settingsPolicy, type SettingsOrigin } from '../src/policy.ts'
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { feishuKind } from '../src/sources/feishu.ts'
 import { githubKind, pollRound } from '../src/sources/github.ts'
@@ -279,7 +279,8 @@ it('assesses a proactive observation in the orchestrator Session and creates the
   const details = await runTool(runtime.masterId, 'orchestrator_eval', { trigger_id: trigger.id })
   // The rules are in the main Session's Policy section; the context names the Policy version it was built from.
   expect(details).not.toHaveProperty('rules')
-  expect(details).toMatchObject({ trigger_id: trigger.id, strength: 'inferred', policy_version: policyVersion(runtime.store.settings()), thread: expect.objectContaining({ complete: true, loaded_messages: 0 }) })
+  // A Feishu Thread is repository-less, so its version covers the repository-less Policy lane (rules, mode and the Feishu part).
+  expect(details).toMatchObject({ trigger_id: trigger.id, strength: 'inferred', policy_version: settingsPolicy(runtime.store.settings(), runtime.sources).versionFor(null), thread: expect.objectContaining({ complete: true, loaded_messages: 0 }) })
   const decision = (id: string) => ({ trigger_id: id, decision: 'accept', title: '文案修订', worktree_name: 'copy-fix', scope: '改副标题', reason: 'explicit copy change', intent_evidence: 'quoted', acknowledgement: '收到，把副标题改成“浏览网页”。',
     rule_assessments: [{ rule_id: 'copy', matched: true, reason: 'copy change' }, { rule_id: 'visual', matched: false, reason: 'not visual' }],
     direction: { implementation_requested: true, target_basis: 'specified', requires_design_decision: false, evidence: 'the message names the replacement' } })
