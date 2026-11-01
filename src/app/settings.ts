@@ -12,6 +12,8 @@ import { changedPaths, settingsNotice } from './notices.ts'
 import type { Sessions } from './sessions.ts'
 import { setupChanged, type Setup } from './setup.ts'
 import type { Store } from './store.ts'
+import type { Deployment } from '../deployment.ts'
+import { githubCredentialId } from '../repository.ts'
 import { KV } from '../kv.ts'
 
 /**
@@ -197,8 +199,18 @@ export class Settings {
       catch (error) { throw new UserError('modelUnavailable', { block, error: error instanceof Error ? error.message : String(error) }) }
     }
     rules.guard?.(current, candidate, origin)
-    if (setupChanged(current, candidate)) await this.host.setup.checkAccounts(block, candidate)
+    const resolved: Deployment | undefined = setupChanged(current, candidate)
+      ? await this.host.setup.checkAccounts(block, candidate) : undefined
     if (stale()) throw new SettingsConflict('Settings changed during the checks. Reload before saving.')
+    // A Source instance's RepositoryBinding identity is immutable. A rename that resolves the same provider repository
+    // ID stays valid; resolving a different one must be refused before the settings save, so the operator adds a Source.
+    if (kind === 'source') {
+      const existing = store.repositories.ofSource(id)
+      const candidateBinding = resolved?.repositories.find(binding => binding.credentialId === githubCredentialId(id))
+      if (resolved && existing && candidateBinding?.id !== existing) {
+        throw new UserError('sourceBindingFixed', { source: id, from: existing, to: candidateBinding?.id ?? 'no binding' })
+      }
+    }
     // Re-read current settings after async checks in case unrelated blocks were saved concurrently.
     const old = store.settings()
     const settings = rules.merge(old, parsed, id)

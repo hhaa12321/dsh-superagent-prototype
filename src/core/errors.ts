@@ -45,6 +45,7 @@ export const USER_ERRORS = {
   sourceNotInstalled: ['refused', 'The {source} Source kind is not installed'],
   sourceExists: ['refused', 'A Source instance {source} already exists'],
   sourceKindFixed: ['refused', 'The {source} Source instance keeps the kind it was created with'],
+  sourceBindingFixed: ['refused', 'The {source} Source is already bound to {from}, but this configuration resolves {to}; a Source instance cannot be rebound to another repository. Add a new Source instance.'],
   noLabels: ['refused', 'This Source has no names to refresh'],
   nothingToSync: ['refused', 'The {source} Source\'s part of the Policy has nothing to sync from, or the Source is off or waiting for setup'],
 } as const satisfies Record<string, readonly ['missing' | 'refused', string]>

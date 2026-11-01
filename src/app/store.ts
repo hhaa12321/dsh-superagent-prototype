@@ -10,6 +10,7 @@ import { OLDEST_SCHEMA, SCHEMA_VERSION, tooOld } from './schema.ts'
 import type { RepositoryBinding } from '../repository.ts'
 import { Versions } from './versions.ts'
 import { storeReads } from './store-read.ts'
+import { SetupError } from '../setup.ts'
 
 /** A Trigger's position on its thread timeline, ordered by timestamp and then `id` as tie-breaker. */
 export interface TimelinePlace { at: string; id: string }
@@ -101,6 +102,14 @@ export class Store implements Repositories {
   }
   /** Closes the underlying SQLite database connection. */
   close(): void { this.db.close() }
+  /** Refuses to remap an existing Source instance to a different immutable RepositoryBinding. */
+  private assertBinding(sourceId: string, repositoryId: string | undefined): void {
+    if (repositoryId === undefined) return
+    const row = this.db.prepare('SELECT repository FROM source_binding WHERE source=?').get(sourceId)
+    if (row && String(row.repository) !== repositoryId) {
+      throw new SetupError('sourceBindingFixed', { source: sourceId, from: String(row.repository), to: repositoryId })
+    }
+  }
   /** Parses JSON `value` columns returned by `sql`. */
   private values<T>(sql: string, ...parameters: SQLInputValue[]): T[] {
     return this.db.prepare(sql).all(...parameters).map(row => JSON.parse(String(row.value)) as T)
@@ -194,6 +203,7 @@ export class Store implements Repositories {
     },
     /** Binds a Source instance to exactly one RepositoryBinding, or removes its binding when `repositoryId` is undefined. */
     bind: (sourceId: string, repositoryId: string | undefined): void => {
+      this.assertBinding(sourceId, repositoryId)
       if (repositoryId === undefined) this.db.prepare('DELETE FROM source_binding WHERE source=?').run(sourceId)
       else this.db.prepare('INSERT INTO source_binding VALUES (?,?) ON CONFLICT(source) DO UPDATE SET repository=excluded.repository').run(sourceId, repositoryId)
     },
@@ -210,6 +220,8 @@ export class Store implements Repositories {
      * mappings are pruned, and a binding no current Source owns is disabled while kept for its existing Tickets.
      */
     reconcile: (bindings: readonly RepositoryBinding[], sources: readonly { sourceId: string; repositoryId: string }[]): void => this.atomic(() => {
+      // Reject a remap before writing anything: a Source instance's binding identity never changes.
+      for (const item of sources) this.assertBinding(item.sourceId, item.repositoryId)
       for (const binding of bindings) {
         this.db.prepare('INSERT INTO repository VALUES (?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value').run(binding.id, JSON.stringify(binding))
       }

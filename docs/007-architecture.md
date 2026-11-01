@@ -435,7 +435,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/shell-environment.spec.ts` | The worker shell environment resolves each Session or subagent to its Ticket binding, and the main Session stays unconstrained |
 | `tests/repository-binding.spec.ts` | Repository identity: collision-free Thread keys, Trigger IDs, Tickets, cursors, health, workspaces and PR ownership across two bindings; cross-repository PR refusal; no global repository accessor; a schema 11 refusal; and a resumed Ticket's binding |
 | `tests/multi-repository.spec.ts` | Two GitHub bindings in one process: separate polling, health and cursors; one worker and one PR per binding with colliding native numbers and branch names; a disabled binding's new intake, with its open Tickets still observed; binding-aware Policy lanes and scheduler lanes; per-binding worker CLIs; and restart persistence |
-| `tests/binding-management.spec.ts` | Panel-side binding management: adding a Source instance under a derived or explicit ID, refusing a duplicate or kind change, and switching a binding without a restart |
+| `tests/binding-management.spec.ts` | Panel-side binding management: adding a Source instance under a derived or explicit ID, refusing a duplicate, kind change or rebind to another repository ID, allowing a same-ID rename, and switching a binding without a restart |
 | `tests/store.spec.ts` | Repositories and their working sets, in SQLite as in memory, the kv area, with every key of `KV` spelled only in `src/kv.ts`, settings history and queries |
 | `tests/prompts.spec.ts` | Prompt validation, assembly and versions |
 | `tests/cards.spec.ts` | The rules the built-in text must state, file by file |
