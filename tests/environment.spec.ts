@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SENSITIVE_ENV_PATTERN, type SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
-import { GIT_LOCATION, agentVariables, credentialHelper, runAsWorker, verifyDirectory, withoutDirectory, workerBin, workerGitConfig, writeEnvironment }
+import { GIT_LOCATION, agentVariables, applyEnvironment, credentialHelper, runAsWorker, verifyDirectory, withoutDirectory, workerBin, workerGitConfig, writeEnvironment }
   from '../src/infra/environment.ts'
 import { CliError } from '../src/infra/commands.ts'
 import { testDeployment, testGithub } from './fixtures/deployment.ts'
@@ -112,11 +112,18 @@ describe('worker shims', () => {
 })
 
 describe('worker credentials', () => {
-  it('removes ambient tokens, including the Gitee read-path token, from worker subprocesses', () => {
+  it('keeps the Gitee read-path token in the host while DSH strips it from worker subprocesses', () => {
+    // Setup applies agentVariables to the host process too, so removing GITEE_TOKEN there would break the Gitee Source.
     const variables = agentVariables(dir)
-    for (const name of ['GH_TOKEN', 'GITHUB_TOKEN', 'GITEE_TOKEN', 'GITEE_ACCESS_TOKEN']) expect(variables[name]).toBeUndefined()
-    // The Gitee token stays in the dsh-superagent process; a worker env carries no GITEE_* variable with a value.
-    expect(Object.keys(variables).filter(name => /^(GITEE|GITHUB)_/.test(name) && variables[name] !== undefined)).toEqual([])
+    expect(variables).not.toHaveProperty('GITEE_TOKEN')
+    expect(variables).not.toHaveProperty('GITEE_ACCESS_TOKEN')
+    for (const name of ['GITEE_TOKEN', 'GITEE_ACCESS_TOKEN']) expect(SENSITIVE_ENV_PATTERN.test(name)).toBe(true)
+    // The GitHub ambient tokens are still removed from the host and every worker.
+    for (const name of ['GH_TOKEN', 'GITHUB_TOKEN']) expect(variables[name]).toBeUndefined()
+    // Applying the agent environment must not delete the Gitee token the Source reads from this process.
+    process.env.GITEE_TOKEN = 'host-token'
+    const restore = applyEnvironment(variables, dir, process.env.PATH ?? '')
+    try { expect(process.env.GITEE_TOKEN).toBe('host-token') } finally { restore(); delete process.env.GITEE_TOKEN }
   })
 })
 

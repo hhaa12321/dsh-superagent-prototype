@@ -48,8 +48,8 @@ export const GIT_LOCATION: readonly string[] = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT
 export function agentVariables(stateDir: string): Record<string, string | undefined> {
   return {
     GH_TOKEN: undefined, GITHUB_TOKEN: undefined,
-    // Gitee read-path credentials stay in the dsh-superagent process; no worker subprocess inherits them.
-    GITEE_TOKEN: undefined, GITEE_ACCESS_TOKEN: undefined,
+    // Gitee's token stays in the dsh-superagent process: setup must not remove it from the host environment, and DSH's
+    // SENSITIVE_ENV_PATTERN already strips credential-shaped names such as GITEE_TOKEN from every worker subprocess.
     // A worker's git finds the repository from its directory, never from the host's environment.
     ...Object.fromEntries(GIT_LOCATION.map(name => [name, undefined])),
     GIT_CONFIG_GLOBAL: workerGitConfig(stateDir), GIT_CONFIG_NOSYSTEM: '1',
