@@ -154,6 +154,12 @@ export class Evals extends EnginePart {
     if (outcome.kind === 'accept' && evaluation.strength !== 'explicit' && !this.policy().admitsInferred(outcome.rules ?? [])) {
       throw new UserError('notExplicit')
     }
+    // A binding whose provider has no complete write path cannot accept work: record why instead of creating a Ticket and
+    // an Assignment that could never run. The capability belongs to the binding's adapter, not to the Engine.
+    if (outcome.kind === 'accept' && !this.executable(outcome.repositoryId ?? thread.repositoryId ?? null)) {
+      return this.decideEval(thread, evaluation, { kind: 'ignore', reason: { code: 'executionUnsupported' },
+        ...outcome.audit ? { audit: outcome.audit } : {} })
+    }
     return this.decideEval(thread, evaluation, outcome)
   }
   /**
@@ -258,6 +264,10 @@ export class Evals extends EnginePart {
     this.record(thread, evaluation, { kind: 'ignore', reason })
     thread.pending = thread.pending.filter(id => !ids.includes(id))
     delete thread.expired
+  }
+  /** Whether the binding's provider has the complete write path this Runtime says a Ticket may execute under. */
+  private executable(repositoryId: string | null): boolean {
+    return this.options.executionAllowed?.(repositoryId) ?? true
   }
   /**
    * The accept Decisions of the Triggers whose primary Thread is `threadKey`, by Trigger: what each one started. An Eval and

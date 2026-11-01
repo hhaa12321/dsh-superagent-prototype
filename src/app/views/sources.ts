@@ -13,7 +13,7 @@ export type HealthMap = Record<string, Health>
 export function repositoryView(store: ViewHost['store'], repositoryId: string | null | undefined) {
   const binding = repositoryId ? store.repositories.get(repositoryId) : undefined
   return binding && { id: binding.id, provider: binding.provider, providerRepositoryId: binding.providerRepositoryId,
-    slug: binding.slug, webUrl: binding.webUrl, enabled: binding.enabled }
+    slug: binding.slug, webUrl: binding.webUrl, enabled: binding.enabled, capabilities: binding.capabilities }
 }
 /** Resolves health entries for a Source instance, treating stale `sourceOff` entries on an enabled Source as `starting`. */
 export function sourceHealth(sources: SourceRegistry, instance: SourceInstance, health: HealthMap) {
@@ -34,7 +34,8 @@ export interface SetupState {
   /** Feishu bot check failure that pauses only the Feishu Source. */
   feishuProblem?: SetupProblem | undefined
 }
-export const problemOf = (id: string, setup: SetupState) => [setup.problem, setup.feishuProblem].find(problem => problem?.place === id)
+export const problemOf = (id: string, setup: SetupState) => setup.deployment?.sourceProblems?.[id]
+  ?? [setup.problem, setup.feishuProblem].find(problem => problem?.place === id)
 /** Source lifecycle state in priority order: missing kind, disabled, setup/part error, blocked on global setup, starting, paused, or ready. */
 export type SourceState = 'missing' | 'off' | 'error' | 'setup' | 'starting' | 'paused' | 'ready'
 function sourceState(instance: SourceInstance & { installed: boolean }, parts: { state: string }[], setup: SetupState): SourceState {

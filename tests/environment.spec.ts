@@ -5,10 +5,10 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SENSITIVE_ENV_PATTERN, type SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
-import { GIT_LOCATION, agentVariables, credentialHelper, runAsWorker, verifyDirectory, withoutDirectory, workerBin, workerGitConfig, writeEnvironment }
+import { GIT_LOCATION, agentVariables, applyEnvironment, credentialHelper, runAsWorker, verifyDirectory, withoutDirectory, workerBin, workerGitConfig, writeEnvironment }
   from '../src/infra/environment.ts'
 import { CliError } from '../src/infra/commands.ts'
-import { testDeployment } from './fixtures/deployment.ts'
+import { testDeployment, testGithub } from './fixtures/deployment.ts'
 import { gitEnv } from './fixtures/git.ts'
 
 // Git and shell subprocesses can exceed the 5s default timeout when the test suite runs in parallel.
@@ -26,7 +26,7 @@ describe('worker shims', () => {
   it('run a wrapper that calls `gh` by name without reaching the shim again, and keep the caller\'s other PATH entries', async () => {
     program(join(dir, 'real', 'gh'), 'echo "{\\"login\\":\\"agent-bot\\",\\"config\\":\\"$GH_CONFIG_DIR\\",\\"path\\":\\"$PATH\\"}"')
     const wrapper = program(join(dir, 'gh-agent'), `GH_CONFIG_DIR=${dir}/agent-config exec gh "$@"`)
-    await writeEnvironment(testDeployment({ stateDir: dir, github: { ...testDeployment().github, cli: wrapper }, feishu: undefined }), [])
+    await writeEnvironment(testDeployment({ stateDir: dir, github: { ...testGithub, cli: wrapper }, feishu: undefined }), [])
     const bin = workerBin(dir)
     const path = [bin, join(dir, 'venv'), join(dir, 'real'), '/usr/bin', '/bin'].join(':')
     const { stdout } = await exec('gh', ['api', 'user'], { env: { PATH: path, DSH_SUPERAGENT_GITHUB_REPOSITORY: 'acme/widgets' }, timeout: 10_000 })
@@ -35,7 +35,7 @@ describe('worker shims', () => {
   it('constrains a worker\'s gh shim and git credential helper to the ticket\'s repository', async () => {
     const log = join(dir, 'calls')
     program(join(dir, 'real', 'gh'), `printf '%s\\n' "$*" >> ${log}; if [ "$1 $2" = 'auth git-credential' ]; then cat; fi`)
-    await writeEnvironment(testDeployment({ stateDir: dir, github: { ...testDeployment().github, cli: join(dir, 'real', 'gh') } }), [])
+    await writeEnvironment(testDeployment({ stateDir: dir, github: { ...testGithub, cli: join(dir, 'real', 'gh') } }), [])
     const bin = workerBin(dir)
     const worker = (repository: string) => ({ PATH: [bin, join(dir, 'real'), '/usr/bin', '/bin'].join(':'), HOME: dir,
       DSH_SUPERAGENT_TICKET: 'ticket-a', DSH_SUPERAGENT_GITHUB_REPOSITORY: repository })
@@ -80,7 +80,7 @@ describe('worker shims', () => {
   it('keep `gh` and `lark-cli` working, and shim no `git`, when the blocked commands name the commands workers need', async () => {
     const gh = program(join(dir, 'gh-agent'), 'echo gh "$@"'), lark = program(join(dir, 'lark-bot'), 'echo lark "$@"')
     const base = testDeployment()
-    await writeEnvironment(testDeployment({ stateDir: dir, github: { ...base.github, cli: gh }, feishu: { ...base.feishu!, cli: lark } }), ['gh', 'git', 'lark-cli'])
+    await writeEnvironment(testDeployment({ stateDir: dir, github: { ...testGithub, cli: gh }, feishu: { ...base.feishu!, cli: lark } }), ['gh', 'git', 'lark-cli'])
     const bin = workerBin(dir)
     expect([(await exec(join(bin, 'gh'), ['api', 'user'], { env: { ...process.env, DSH_SUPERAGENT_GITHUB_REPOSITORY: 'acme/widgets' } })).stdout,
       (await exec(join(bin, 'lark-cli'), ['im'])).stdout]).toEqual(['gh api user\n', 'lark im\n'])
@@ -111,12 +111,28 @@ describe('worker shims', () => {
   })
 })
 
+describe('worker credentials', () => {
+  it('keeps the Gitee read-path token in the host while DSH strips it from worker subprocesses', () => {
+    // Setup applies agentVariables to the host process too, so removing GITEE_TOKEN there would break the Gitee Source.
+    const variables = agentVariables(dir)
+    expect(variables).not.toHaveProperty('GITEE_TOKEN')
+    expect(variables).not.toHaveProperty('GITEE_ACCESS_TOKEN')
+    for (const name of ['GITEE_TOKEN', 'GITEE_ACCESS_TOKEN']) expect(SENSITIVE_ENV_PATTERN.test(name)).toBe(true)
+    // The GitHub ambient tokens are still removed from the host and every worker.
+    for (const name of ['GH_TOKEN', 'GITHUB_TOKEN']) expect(variables[name]).toBeUndefined()
+    // Applying the agent environment must not delete the Gitee token the Source reads from this process.
+    process.env.GITEE_TOKEN = 'host-token'
+    const restore = applyEnvironment(variables, dir, process.env.PATH ?? '')
+    try { expect(process.env.GITEE_TOKEN).toBe('host-token') } finally { restore(); delete process.env.GITEE_TOKEN }
+  })
+})
+
 describe('agent git configuration', () => {
   it('ignores the operator\'s global and system git configuration, also after DSH drops credential-shaped variables', async () => {
     const home = join(dir, 'home'); mkdirSync(home)
     // Operator configuration that rewrites HTTPS to SSH, enables commit signing, and sets a credential helper.
     writeFileSync(join(home, '.gitconfig'), '[url "git@github.com:"]\n\tinsteadOf = https://github.com/\n[commit]\n\tgpgsign = true\n[credential]\n\thelper = osxkeychain\n')
-    const deployment = testDeployment({ stateDir: dir, github: { ...testDeployment().github, cli: '/opt/agent tools/gh' } })
+    const deployment = testDeployment({ stateDir: dir, github: { ...testGithub, cli: '/opt/agent tools/gh' } })
     await writeEnvironment(deployment, [])
     // Operator identity variables and git's fallback from the OS username must not apply to worker commits.
     const env = workerEnv({ PATH: process.env.PATH, HOME: home, GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.abbrev', GIT_CONFIG_VALUE_0: '12', GIT_AUTHOR_NAME: 'Operator', GIT_COMMITTER_EMAIL: 'operator@example.com', ...agentVariables(dir) })
@@ -140,7 +156,7 @@ it('fails instead of asking the operator\'s askpass helpers when the agent\'s cr
   const log = join(dir, 'asked')
   const askpass = program(join(dir, 'askpass'), `echo asked >> ${log}; echo operator-secret`)
   const agent = program(join(dir, 'real', 'gh'), 'exit 0')
-  const deployment = testDeployment({ stateDir: dir, github: { ...testDeployment().github, cli: agent } })
+  const deployment = testDeployment({ stateDir: dir, github: { ...testGithub, cli: agent } })
   await writeEnvironment(deployment, [])
   const env = workerEnv({ PATH: process.env.PATH, HOME: dir, GIT_ASKPASS: askpass, SSH_ASKPASS: askpass,
     DSH_SUPERAGENT_GITHUB_REPOSITORY: 'acme/widgets', ...agentVariables(dir) })

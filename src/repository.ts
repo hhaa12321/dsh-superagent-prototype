@@ -1,5 +1,6 @@
 /** Repository identity: one explicit binding per remote repository, independent of any mutable slug. */
 import { z } from 'zod'
+import { ForgeCapabilitiesSchema } from './forge/capabilities.ts'
 
 const ProviderSchema = z.string().regex(/^[a-z][a-z0-9-]*$/, 'a registered forge adapter ID such as github')
 /**
@@ -21,12 +22,16 @@ export const RepositoryBindingSchema = z.object({
   webUrl: z.string().url(),
   /** Reference to a protected credential source; the secret itself is never part of domain state. */
   credentialId: z.string().min(1),
+  /** The operations this binding's adapter reported at resolution; persisted facts, never a secret. */
+  capabilities: ForgeCapabilitiesSchema,
   enabled: z.boolean(),
 }).strict()
 export type RepositoryBinding = z.infer<typeof RepositoryBindingSchema>
 
-/** Stable credential ID for the GitHub CLI an instance uses; the secret stays outside domain state. */
-export const githubCredentialId = (sourceId: string): string => `github:${sourceId}`
+/** Stable credential reference of a repository-bound Source instance; the secret stays outside domain state. */
+export const forgeCredentialId = (provider: string, sourceId: string): string => `${provider}:${sourceId}`
+/** Stable credential ID for the GitHub CLI an instance uses. */
+export const githubCredentialId = (sourceId: string): string => forgeCredentialId('github', sourceId)
 
 /** Namespace of a ticket's workspace: a repository-bound ticket lives under its repository ID. */
 export const NO_REPOSITORY = '_no-repository'

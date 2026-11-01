@@ -99,7 +99,7 @@ function setupView(runtime: HttpHost) {
   return {
     machine: machineView(runtime.machine), problem: runtime.setupProblem ?? null, feishuProblem: runtime.feishuProblem ?? null,
     accounts: resolved ? { repository: resolved.repositories[0]?.slug ?? '', repositories: resolved.repositories.map(binding => ({ id: binding.id, provider: binding.provider,
-      slug: binding.slug, webUrl: binding.webUrl, enabled: binding.enabled })), agent: resolved.github.login,
+      slug: binding.slug, webUrl: binding.webUrl, enabled: binding.enabled })), agent: resolved.github?.login ?? Object.values(resolved.giteeCredentials)[0]?.login ?? '',
       feishu: resolved.feishu ? { appId: resolved.feishu.appId, brand: resolved.feishu.brand, botId: resolved.feishu.botId, name: resolved.feishu.name } : null } : null,
   }
 }

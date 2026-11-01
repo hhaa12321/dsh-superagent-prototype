@@ -24,13 +24,16 @@ export function settingsView(store: Store, sources: SourceRegistry, health: Heal
   const settings = store.settings()
   const block = <V>(name: 'policy' | 'eval' | 'executor', value: V) => ({ value, revision: store.blockRevision(name) })
   const owners = new Map(store.repositories.sources().map(item => [item.repositoryId, item.sourceId]))
-  /** The binding's display facts plus the Source instance that owns it and the account its credential resolves to. */
+  /** The binding's display facts plus the Source instance that owns it and the account its provider credential resolves to. */
   const repository = (repositoryId: string | null | undefined) => {
     const view = repositoryView(store, repositoryId)
     if (!view) return undefined
     const resolved = setup.deployment?.repositories.find(binding => binding.id === view.id)
-    const credential = resolved ? setup.deployment?.credentials[resolved.credentialId] : undefined
-    return { ...view, sourceId: owners.get(view.id) ?? '', ...credential ? { account: credential.login } : {} }
+    const deployment = setup.deployment
+    const account = !resolved || !deployment ? undefined
+      : (resolved.provider === 'github' ? deployment.credentials[resolved.credentialId]?.login
+        : deployment.giteeCredentials[resolved.credentialId]?.login)
+    return { ...view, sourceId: owners.get(view.id) ?? '', ...account ? { account } : {} }
   }
   return {
     policyVersion: policyVersion(settings),

@@ -1,6 +1,7 @@
 /** Default deployment and machine fixtures for tests. */
 import type { Volatile } from '@deepseek-ai/cordis'
-import type { Deployment, Machine } from '../../src/deployment.ts'
+import type { Deployment, GithubCredential, Machine } from '../../src/deployment.ts'
+import type { ForgeCapabilities } from '../../src/forge/capabilities.ts'
 import type { RepositoryBinding } from '../../src/repository.ts'
 import { Commands } from '../../src/infra/commands.ts'
 
@@ -13,13 +14,18 @@ export const testMachine = (overrides: Partial<Machine> = {}): Machine => ({
   stateDir: '/tmp/dsh-superagent-test', promptMaxChars: reference(100000), admissionContextMaxPages: reference(10),
   admissionContextTimeoutMs: reference(15000), ...overrides,
 })
+export const testCapabilities: ForgeCapabilities = { repository: 'read-write', identity: true, issues: { read: true, comment: true },
+  pulls: { read: true, create: true, comment: true, reviews: true }, ci: true, execution: true }
+export const testGithub: GithubCredential = { cli: '/bin/false', login: 'agent-bot', noreply: '7+agent-bot@users.noreply.github.com' }
 export const testRepository: RepositoryBinding = { id: 'github:101', provider: 'github', providerRepositoryId: '101', slug: 'acme/widgets',
-  webUrl: 'https://github.com/acme/widgets', credentialId: 'github:github', enabled: true }
+  webUrl: 'https://github.com/acme/widgets', credentialId: 'github:github', capabilities: testCapabilities, enabled: true }
 export const githubRef = { sourceId: 'github', repositoryId: testRepository.id }
 export const testDeployment = (overrides: Partial<Deployment> = {}): Deployment => {
-  const github = overrides.github ?? { cli: '/bin/false', login: 'agent-bot', noreply: '7+agent-bot@users.noreply.github.com' }
+  const github = 'github' in overrides ? overrides.github : testGithub
   return {
-    ...testMachine(), github, credentials: overrides.credentials ?? { 'github:github': github }, repositories: overrides.repositories ?? [testRepository],
+    ...testMachine(), ...github ? { github } : {}, credentials: overrides.credentials ?? (github ? { 'github:github': github } : {}),
+    giteeCredentials: overrides.giteeCredentials ?? {},
+    repositories: overrides.repositories ?? [testRepository],
     feishu: { cli: '/bin/false', botId: 'ou_bot', appId: 'cli_bot', brand: 'feishu', name: 'Widgets Bot' },
     ...overrides,
   }

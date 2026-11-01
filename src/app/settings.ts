@@ -13,7 +13,7 @@ import type { Sessions } from './sessions.ts'
 import { setupChanged, type Setup } from './setup.ts'
 import type { Store } from './store.ts'
 import type { Deployment } from '../deployment.ts'
-import { githubCredentialId } from '../repository.ts'
+import { forgeCredentialId } from '../repository.ts'
 import { KV } from '../kv.ts'
 
 /**
@@ -206,7 +206,7 @@ export class Settings {
     // ID stays valid; resolving a different one must be refused before the settings save, so the operator adds a Source.
     if (kind === 'source') {
       const existing = store.repositories.ofSource(id)
-      const candidateBinding = resolved?.repositories.find(binding => binding.credentialId === githubCredentialId(id))
+      const candidateBinding = resolved?.repositories.find(binding => binding.credentialId === forgeCredentialId(sources.kindOf(id)?.kind ?? id, id))
       if (resolved && existing && candidateBinding?.id !== existing) {
         throw new UserError('sourceBindingFixed', { source: id, from: existing, to: candidateBinding?.id ?? 'no binding' })
       }

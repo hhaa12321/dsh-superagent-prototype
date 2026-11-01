@@ -17,6 +17,11 @@ export interface EngineOptions {
   repositoryExists?(repositoryId: string): boolean
   /** The repository binding a Thread reference belongs to, resolved by its Source instance when the Thread is not stored yet. */
   threadRepository?(ref: ThreadRef): string | null
+  /**
+   * Whether a binding's provider has the complete write path for a Ticket to execute; an accept for one that does not is
+   * recorded as an ignore, so no Ticket or Assignment is created. Absent means every binding may execute.
+   */
+  executionAllowed?(repositoryId: string | null): boolean
   now?: () => string
   emit?: (event: DomainEvent) => void
 }

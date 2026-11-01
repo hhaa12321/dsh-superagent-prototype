@@ -291,8 +291,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 | Path | Responsibility |
 | --- | --- |
 | `src/index.ts` | The main plugin entry: reads the machine settings, starts the Runtime, and gives it the restart that a save of a Source's account uses |
-| `src/deployment.ts` | The plugin `Config` and `Machine`; `resolveDeployment` resolves one `RepositoryBinding` per configured GitHub Source instance from the provider's immutable repository ID and verifies push access, and `resolveFeishuBot` reads the bot; each CLI runs as Executor shells run it; `SETUP_FIELDS` lists the Source fields setup reads. The code names no person, account or organization |
-| `src/repository.ts` | `RepositoryBinding` and its schema, the stable `<provider>:<providerRepositoryId>` key, a credential ID, and the workspace repository namespace |
+| `src/deployment.ts` | The plugin `Config` and `Machine`; `resolveDeployment` resolves one `RepositoryBinding` per configured forge Source instance through its provider adapter, from the immutable repository ID, verifying push access and recording capability facts; a failure scoped to one Source leaves the others running, and a Gitee-only deployment needs no GitHub account. `resolveFeishuBot` reads the bot; each CLI runs as Executor shells run it; `SETUP_FIELDS` lists the Source fields setup reads. The code names no person, account or organization |
+| `src/repository.ts` | `RepositoryBinding` and its schema, the stable `<provider>:<providerRepositoryId>` key, a credential reference, the adapter's capability facts, and the workspace repository namespace |
 | `src/setup.ts` | Setup problems: `SetupError`, with a code, the place that fixes it and the English text the log, the main Session and the panel share |
 | `src/policy.ts` | The Policy: the settings schemas by block, the Policy version, the gate and Mandate revalidation |
 | `src/admission.ts` | The admission table's values, each cell's options and defaults, shared with the panel |
@@ -360,10 +360,17 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/infra/paths.ts` | The package's root, where packaged files are |
 | `src/infra/text.ts` | Word counts and the chat message limit, `fill` and `sameName` |
 | `src/infra/health.ts` | The `HealthBoard`, every part's health entry, each claimed by its one writer |
+| `src/forge/capabilities.ts` | The capability facts a forge adapter reports, their schema on a RepositoryBinding, and the supported/unsupported query the panel uses; `execution` says whether the provider's complete write path lets a Ticket run |
+| `src/forge/config.ts` | The setup-read Source configuration of each forge: a GitHub repository and CLI, and a Gitee repository and token environment variable name |
+| `src/forge/ports.ts` | The capability boundary: repository resolution and identity/access, Issue/comment reads, pull-request reads, and presentation; provider-neutral records keep native IDs apart from display numbers |
+| `src/forge/registry.ts` | `ForgeRegistry`, one built-in adapter per provider |
+| `src/forge/github.ts` | The GitHub adapter: repository resolution and identity/access through the agent's `gh`, and Issue, comment, and pull-request reads through the binding's `Commands` |
+| `src/forge/gitee.ts` | The Gitee API v5 adapter: `fetch` with the token in an Authorization header, `AbortSignal`, `URL`, `zod` response validation, page cursors, and honest read-only capabilities |
 | `src/sources/kind.ts` | The `SourceKind` protocol |
 | `src/sources/registry.ts` | `SourceRegistry` |
 | `src/sources/host.ts` | `SourceHost`, `SourceContext`, `Health`, `health` and the fixed health texts |
-| `src/sources/poll.ts` | What GitHub and Feishu polling share: `POLL_HORIZON_MS`, `polled`, `cursorAt`, and `pollThreads`, which keeps a failure on its Thread as `pollError` |
+| `src/sources/poll.ts` | What GitHub, Gitee, and Feishu polling share: `POLL_HORIZON_MS`, `polled`, `cursorAt`, `pollFailure`, and `pollThreads`, which keeps a failure on its Thread as `pollError` |
+| `src/sources/gitee.ts` | The Gitee kind and plugin entry, exported as `./gitee-watch`: reads one bound repository's Issues, their comments, and new pull requests through the Gitee adapter into repository-scoped Triggers and Threads, keyed by native Issue ID and comment ID; read path only |
 | `src/sources/github.ts` | The GitHub kind and plugin entry, exported as `./github-watch`: a poll round of notifications, the pull requests of open Tickets with their CI, and subscribed Threads; while the binding is off, only the open Tickets' pull requests and subscribed Threads |
 | `src/sources/github-trigger.ts` | GitHub comments, reviews, Issue bodies and CI changes as Triggers, and GitHub addresses |
 | `src/sources/github-pull.ts` | The pull request rules: which pull requests a Ticket follows (`claimPull`, `observePull`), the closes it reports to the Engine, and `pullEndNotices`, the chat notice of a Ticket that ended merged or closed |
@@ -399,7 +406,15 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/client/locales.ts` | All copy in both languages, and the glossary of [001 Domain model](001-domain.md) |
 | `src/client/client.css`, `css.d.ts` | The panel's stylesheet, loaded as text |
 
-`src/sources/github.ts` and `src/sources/feishu.ts` are also the entries of the two Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch` and `./feishu-watch`. The bundle's `cordis.patch.yml` inserts the three plugins, with Feishu disabled.
+`src/sources/github.ts`, `src/sources/gitee.ts`, and `src/sources/feishu.ts` are also the entries of the three Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch`, `./gitee-watch`, and `./feishu-watch`. The bundle's `cordis.patch.yml` inserts those plugins, with Feishu disabled.
+
+### Forge adapters
+
+`src/forge/` is the boundary between the domain and a provider's protocol. A `RepositoryBinding` names its `provider`; setup asks that provider's adapter to resolve the configured slug into the immutable repository ID, authenticate the account its credential reference names, verify push access, and report capability facts, which are persisted with the binding. Reads go through narrow ports (`listIssues`, `readIssue`, `listComments`, `listPulls`, `readPull`) whose records keep every native identity: Gitee's numeric Issue `id` is the Thread identity while its string `number` is display metadata, a pull request keeps its numeric `id` apart from its display `number`, and a comment is identified by its native ID. Unsupported operations, such as Gitee reviews and CI, are reported as capability facts instead of failing a generic read.
+
+The `execution` capability gates acceptance provider-neutrally: `EngineOptions.executionAllowed` reads the target binding's capability, and an accept for a binding that reports `false` is recorded as an `ignore` decision with `executionUnsupported`, so no Ticket or runnable Assignment exists. Gitee reports `false` in Phase 3; Phase 4 flips its adapter to `true` once the complete write path exists.
+
+The two built-in adapters do not share a provider-shaped API. GitHub reads through the binding's `Commands` (the agent's `gh`); Gitee reads over HTTP with Node's `fetch`, the token from the credential reference's environment variable in an `Authorization` header, `AbortSignal`, `URL`, and `zod` validation at the boundary. The Gitee token is never placed in a URL, persisted, logged, or passed to workers.
 
 ## Tests
 
@@ -410,6 +425,9 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/policy.spec.ts` | Source scope, the gate, the admission table, Mandate revalidation, the Policy version and assessment outcomes |
 | `tests/registry.spec.ts` | `SourceRegistry`: instances, validation, Policy parts, Channels and Thread context |
 | `tests/sources.spec.ts` | The Feishu and GitHub Sources on a `SourceContext`: translation, polls and read positions, the pull request rules, health |
+| `tests/forge-contract.spec.ts` | The forge capability boundary against a fake forge and the recorded Gitee API v5 shapes: repository/identity/access, Issue list/detail, comments, PR list/read, pagination, honest capabilities, and sanitized failures |
+| `tests/gitee-source.spec.ts` | The Gitee Source: canary Issue and comment ingestion into repository-scoped Triggers and Threads, native-ID dedupe across polls and a restart, colliding display numbers in two bindings, PR reads, binding-scoped health and accounts, a partial setup failure, and a Gitee-only deployment |
+| `tests/gitee-live.spec.ts` | Opt-in live Gitee smoke against the prepared canary: authenticated identity and push access, Issue, comment, and pull reads, and two polls without a duplicate Trigger; the token is read from `GITEE_LIVE_TOKEN_FILE`, never printed or persisted, and the file is skipped without it |
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
 | `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
 | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |
@@ -450,7 +468,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/class-docs.spec.ts` | Every class in `src` has a JSDoc block before it |
 | `tests/docs.spec.ts` | Numbered documents link only to earlier ones, every local link resolves, no document has merge conflict markers, and this document's tables list every module and every test |
 
-`tests/fixtures/` holds what several tests share: `host.ts`, a simulated DeepSeek Harness host; `panel-server.ts` and `panel.tsx`, the fake management API and the panel around a page; `deployment.ts`, a resolved deployment; `git.ts`, the environment of every git the tests start, which names no repository; and `async.ts`.
+`tests/fixtures/` holds what several tests share: `host.ts`, a simulated DeepSeek Harness host; `panel-server.ts` and `panel.tsx`, the fake management API and the panel around a page; `deployment.ts`, a resolved deployment; `git.ts`, the environment of every git the tests start, which names no repository; `gitee/`, the recorded Gitee API v5 responses the adapter contract and Source tests replay; and `async.ts`.
 
 ## Persistence
 
@@ -464,7 +482,7 @@ One SQLite file, `<stateDir>/orchestrator.sqlite`, which only the Store opens.
 | `thread` | Threads with their indexed `repository_id`: Subscriptions, the Tickets that follow it for context, queued Triggers, the Eval in progress, the count of its expiries and `meta`; the generated columns `active`, set while Triggers are queued or an Eval runs, and `subscribed`, its Source while a Ticket subscribes to it | Engine; Sources write `meta` |
 | `ticket` | Tickets with their indexed `repository_id`, their Mandate, origin, execution, Assignments, Channels, Inputs and the Threads they follow; the generated columns `open`, set while it has not ended, and `active`, set while Inputs are undelivered or the latest Assignment is pending or running | Engine |
 | `decision` | Decisions, by Thread | Engine |
-| `repository` | Each persisted RepositoryBinding: provider, immutable provider repository ID, slug, web URL, credential ID and enabled state | Setup |
+| `repository` | Each persisted RepositoryBinding: provider, immutable provider repository ID, slug, web URL, credential reference, capability facts, and enabled state | Setup |
 | `source_binding` | The one RepositoryBinding of each repository-bound Source instance, by stable `sourceId` | Setup |
 | `effect` | The effect queue: per kind and key, the payload, its order, failed attempts with the last error, and when it is due | Effects |
 | `outbox` | The receipt of each message for a Channel, by id, with the Ticket it is for and its `status`, `pending`, `sent` or `dropped`, kept so an id is never queued twice; for a dropped message, when and why, as the generated column `dropped`, its time, and a reason code. A message that waits has a `reply` effect, which holds its attempts | The Outbox |
@@ -481,7 +499,7 @@ A generated column is computed from its row's JSON and is empty outside its set,
 | Prompt versions | `prompt-revision`, `prompt-version:<n>` |
 | Main Session | `master-id` |
 | Session prompt history | `session-prompts:<session id>` |
-| Source state | Read positions such as `github-cursor:<sourceId>:<repositoryId>:<number>`, PR CI fingerprints and seen Feishu-topic messages; repository-bound keys include the Source instance and RepositoryBinding, and Feishu keys begin with the kind or `thread-` plus a Thread key |
+| Source state | Read positions such as `github-cursor:<sourceId>:<repositoryId>:<number>`, Gitee stream and Issue cursors, PR CI fingerprints and seen Feishu-topic messages; repository-bound keys include the Source instance and RepositoryBinding, and Feishu keys begin with the kind or `thread-` plus a Thread key |
 | Display names | `source-labels:<source id>` |
 
 Dismissal is stored on its Decision. Input text is rendered from the Ticket when read, so neither needs a separate key-value record.

@@ -1,6 +1,7 @@
 /** Source status view (health, filtered Triggers, dropped replies) and Source settings cards. */
 import { useEffect, useState, type FormEvent } from 'react'
 import type { FieldSpec } from '../sources/kind.ts'
+import { FORGE_CAPABILITY_IDS, forgeSupports, unsupportedCapabilities } from '../forge/capabilities.ts'
 import { usePoll, type DroppedReply, type SourceStatusRow, type SourceView } from './api.ts'
 import { Button, DisclosureRow, Dot, Icon, InfoTip, Input, Switch, Tag } from './controls.tsx'
 import { SaveBar } from './draft.tsx'
@@ -11,17 +12,24 @@ import { ConfigHistory, Fields, SourceField, useBlockDraft, useSettings } from '
 import { actorName, errorText, healthText, localized, readableMarkers, reasonLabel, valueLabel, when } from './text.ts'
 import { CheckSetupButton, Hint, KeyValues, LabelValue, LoadState, SetupMessage, StatusHead, When } from './widgets.tsx'
 
-/** The binding facts of one Source instance: repository, immutable binding ID, account, provider, and the instance ID. */
+/**
+ * The binding facts of one Source instance: repository, immutable binding ID, account, provider, the instance ID, and the
+ * operations its adapter supports, with the unsupported ones stated instead of hidden.
+ */
 function BindingFacts({ source }: { source: SourceView }) {
   const { t } = usePanel()
   const { repository } = source
   if (!repository) return null
+  const supported = FORGE_CAPABILITY_IDS.filter(id => forgeSupports(repository.capabilities, id))
+  const unsupported = unsupportedCapabilities(repository.capabilities)
   return <KeyValues rows={[
     [t('sourceRepositoryLabel'), <a className="dt-inline-link" href={repository.webUrl} target="_blank" rel="noreferrer">{repository.slug}</a>],
     [t('sourceBindingLabel'), <span className="dt-mono">{repository.id}</span>],
     [t('sourceProviderLabel'), repository.provider],
     ...repository.account ? [[t('sourceAccountLabel'), `@${repository.account}`] as [string, string]] : [],
     [t('sourceInstanceLabel'), <span className="dt-mono">{source.id}</span>],
+    [t('sourceCapabilitiesLabel'), <span className="dt-row-meta">{supported.map(id => <Tag key={id} tone="neutral">{t(`sourceCapability.${id}`)}</Tag>)}</span>],
+    ...unsupported.length ? [[t('sourceUnsupportedLabel'), unsupported.map(id => t(`sourceCapability.${id}`)).join(', ')] as [string, string]] : [],
   ]} />
 }
 

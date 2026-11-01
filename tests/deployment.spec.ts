@@ -63,7 +63,9 @@ describe('setup', () => {
     const deployment = await resolveDeployment(machine(), source({ repository: 'acme/widgets', cli: 'gh' }), probe, path)
     expect(deployment.github).toEqual({ cli: join(dir, 'bin', 'gh'), login: 'Agent-Bot', noreply: '7+Agent-Bot@users.noreply.github.com' })
     expect(deployment.repositories).toEqual([{ id: 'github:101', provider: 'github', providerRepositoryId: '101', slug: 'acme/widgets',
-      webUrl: 'https://github.com/acme/widgets', credentialId: 'github:github', enabled: true }])
+      webUrl: 'https://github.com/acme/widgets', credentialId: 'github:github', enabled: true, capabilities: {
+        repository: 'read-write', identity: true, issues: { read: true, comment: true },
+        pulls: { read: true, create: true, comment: true, reviews: true }, ci: true, execution: true } }])
     expect(deployment.credentials['github:github']).toEqual(deployment.github)
     expect(deployment).not.toHaveProperty('feishu')
     // A renamed repository is still resolved by its old name; the binding keeps GitHub's immutable ID and current full_name.
@@ -91,7 +93,7 @@ describe('setup', () => {
     await expect(resolveDeployment(machine(), [
       { sourceId: 'github-a', kind: 'github', enabled: true, config: { repository: 'acme/widgets', cli: 'gh' } },
       { sourceId: 'github-b', kind: 'github', enabled: true, config: { repository: 'acme/widgets', cli: 'gh' } },
-    ], probe, path)).rejects.toEqual(setupError('github', 'repositoryDuplicate', { repository: 'acme/widgets', sources: 'github-a, github-b' }))
+    ], probe, path)).rejects.toEqual(setupError('deployment', 'repositoryDuplicate', { repository: 'acme/widgets', sources: 'github-a, github-b' }))
   })
   it('reads the Feishu bot from a bot-only lark-cli, or finds none when the Feishu Source names no CLI', async () => {
     expect(await resolveFeishuBot(machine(), {}, probe, path)).toBeUndefined()

@@ -8,11 +8,11 @@ import { githubChannel } from '../src/sources/github-trigger.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
 import { SettingsSchema } from '../src/policy.ts'
 import { key, type OutboundMessage } from '../src/core/index.ts'
-import { testDeployment, testCommands, githubRef, testRepository } from './fixtures/deployment.ts'
+import { testDeployment, testCommands, githubRef, testRepository, testGithub } from './fixtures/deployment.ts'
 const sources = new SourceRegistry(() => SettingsSchema.parse({ sources: { github: { kind: 'github', enabled: true, config: { repository: 'acme/widgets', cli: 'gh' } }, feishu: { kind: 'feishu', enabled: true, config: { cli: 'lark-bot' } } } }), undefined, undefined, sourceId => sourceId === 'github' ? testRepository : undefined)
 sources.register(feishuKind); sources.register(githubKind)
 const send = (commands: Commands, message: OutboundMessage) => sources.send(message, commands)
-const agentGithub = { ...testDeployment().github, cli: '/path/agent-gh' }
+const agentGithub = { ...testGithub, cli: '/path/agent-gh' }
 const deployment = testDeployment({ github: agentGithub, credentials: { 'github:github': agentGithub } })
 const REPOSITORY = testRepository.slug
 const reply = { id: 'stable-operation', channel: githubChannel(githubRef, 8), text: 'Done', kind: 'reply' as const }

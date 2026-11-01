@@ -48,6 +48,8 @@ export const GIT_LOCATION: readonly string[] = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT
 export function agentVariables(stateDir: string): Record<string, string | undefined> {
   return {
     GH_TOKEN: undefined, GITHUB_TOKEN: undefined,
+    // Gitee's token stays in the dsh-superagent process: setup must not remove it from the host environment, and DSH's
+    // SENSITIVE_ENV_PATTERN already strips credential-shaped names such as GITEE_TOKEN from every worker subprocess.
     // A worker's git finds the repository from its directory, never from the host's environment.
     ...Object.fromEntries(GIT_LOCATION.map(name => [name, undefined])),
     GIT_CONFIG_GLOBAL: workerGitConfig(stateDir), GIT_CONFIG_NOSYSTEM: '1',
@@ -165,7 +167,7 @@ export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' |
   await shim('gh', `${withoutShims}
 ${bindingGuard(deployment)}`)
   for (const name of new Set(blockedCommands.filter(name => !WORKER_COMMANDS.includes(name)))) {
-    await shim(name, fail(`${name} is blocked in this installation; use gh, which acts as ${github.login}.`))
+    await shim(name, fail(`${name} is blocked in this installation; use gh${github ? `, which acts as ${github.login}` : ''}.`))
   }
   await shim('lark-cli', feishu ? run(feishu.cli) : fail('lark-cli is unavailable: this installation has no Feishu bot.'))
   for (const name of before) if (!kept.has(name)) await unlink(join(dir, name))
@@ -221,8 +223,8 @@ export async function runAsWorker(subprocess: SubprocessRuntime, argv: string[],
 }
 
 /** Verifies that worker git invocations resolve the deployment's GitHub credential helper. */
-export async function verifyEnvironment(deployment: Pick<Deployment, 'github' | 'stateDir'>, subprocess: SubprocessRuntime, signal: AbortSignal): Promise<void> {
-  const { github, stateDir } = deployment
+export async function verifyEnvironment(deployment: Pick<Deployment, 'stateDir'>, subprocess: SubprocessRuntime, signal: AbortSignal): Promise<void> {
+  const { stateDir } = deployment
   // `-z` separates fields with NUL and never quotes paths.
   const helpers = (await runAsWorker(subprocess, ['git', 'config', '-z', '--show-origin', '--get-all', 'credential.https://github.com.helper'], stateDir, AbortSignal.any([signal, AbortSignal.timeout(60_000)])).catch(() => '')).split('\0')
   if (helpers.join('\0') !== [`file:${workerGitConfig(stateDir)}`, credentialHelper(stateDir), ''].join('\0')) throw new SetupError('gitTooOld')
