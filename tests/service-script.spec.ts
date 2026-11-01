@@ -84,6 +84,13 @@ it('takes no `dsh plugin` command of the profile for its service', async () => {
     `${service} node node /opt/my tools/dsh --profile superagent --no-open`)
   expect(await status('superagent')).toMatchObject({ pids: [service] })
 })
+it('takes a MainThread process running node then the DSH CLI for the service, not one that merely names the profile', async () => {
+  const service = sleeper()
+  processes(`${service} MainThread node /opt/my tools/dsh --profile superagent --no-open`,
+    `${sleeper()} MainThread node /opt/my tools/unrelated.js --profile superagent`,
+    `${sleeper()} MainThread sleep 60 --profile superagent`)
+  expect(await status('superagent')).toMatchObject({ pids: [service] })
+})
 it('records the service PID at start, and still refuses a second instance the scan finds', async () => {
   const url = await answering()
   const pid = sleeper()
