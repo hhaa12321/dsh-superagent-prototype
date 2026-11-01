@@ -128,7 +128,8 @@ export function apply(ctx: Context): void {
       }))
     }).catch((error: unknown) => {
       // A failed startup check also stays a Source health problem rather than an unhandled rejection.
-      try { sourceContext(ctx.orchestrator, githubKind).report('github', { state: 'error', detail: String(error) }) }
+      const instance = ctx.orchestrator.sources.instancesOfKind(githubKind.kind)[0]
+      try { if (instance) sourceContext(ctx.orchestrator, githubKind, instance.id).report('github', { state: 'error', detail: String(error) }) }
       catch { /* The Source is not registered (uninstalled); its failure belongs to setup health. */ }
     })
     return async () => { controller.abort(); await running }

@@ -29,8 +29,47 @@ describe('worker shims', () => {
     await writeEnvironment(testDeployment({ stateDir: dir, github: { ...testDeployment().github, cli: wrapper }, feishu: undefined }), [])
     const bin = workerBin(dir)
     const path = [bin, join(dir, 'venv'), join(dir, 'real'), '/usr/bin', '/bin'].join(':')
-    const { stdout } = await exec('gh', ['api', 'user'], { env: { PATH: path }, timeout: 10_000 })
+    const { stdout } = await exec('gh', ['api', 'user'], { env: { PATH: path, DSH_SUPERAGENT_GITHUB_REPOSITORY: 'acme/widgets' }, timeout: 10_000 })
     expect(JSON.parse(stdout)).toEqual({ login: 'agent-bot', config: `${dir}/agent-config`, path: [join(dir, 'venv'), join(dir, 'real'), '/usr/bin', '/bin'].join(':') })
+  })
+  it('constrains a worker\'s gh shim and git credential helper to the ticket\'s repository', async () => {
+    const log = join(dir, 'calls')
+    program(join(dir, 'real', 'gh'), `printf '%s\\n' "$*" >> ${log}; if [ "$1 $2" = 'auth git-credential' ]; then cat; fi`)
+    await writeEnvironment(testDeployment({ stateDir: dir, github: { ...testDeployment().github, cli: join(dir, 'real', 'gh') } }), [])
+    const bin = workerBin(dir)
+    const worker = (repository: string) => ({ PATH: [bin, join(dir, 'real'), '/usr/bin', '/bin'].join(':'), HOME: dir,
+      DSH_SUPERAGENT_TICKET: 'ticket-a', DSH_SUPERAGENT_GITHUB_REPOSITORY: repository })
+    expect((await exec('gh', ['api', 'repos/acme/widgets/issues'], { env: worker('acme/widgets') })).stdout).toBe('')
+    expect(readFileSync(log, 'utf8')).toContain('api repos/acme/widgets/issues')
+    for (const args of [['api', 'repos/acme/other/issues'], ['api', 'graphql'], ['api', 'search/issues']]) {
+      await expect(exec('gh', args, { env: worker('acme/widgets') })).rejects.toMatchObject({ code: 1,
+        stderr: expect.stringContaining("gh api may only read this ticket's repository acme/widgets or the account") })
+    }
+    for (const args of [['-R', 'acme/other', 'pr', 'list'], ['--repo=acme/other', 'pr', 'view']]) {
+      await expect(exec('gh', args, { env: worker('acme/widgets') })).rejects.toMatchObject({ code: 1,
+        stderr: expect.stringContaining('this worker is bound to acme/widgets') })
+    }
+    // Account endpoints the prompts use stay available; a repository-less ticket gets no GitHub command at all.
+    await exec('gh', ['api', 'users/someone'], { env: worker('acme/widgets') })
+    // A repository-less ticket gets no GitHub command at all, and the main Session (no ticket marker) is not constrained.
+    await expect(exec('gh', ['api', 'repos/acme/widgets/issues'], { env: worker('') })).rejects.toMatchObject({ code: 1,
+      stderr: expect.stringContaining('no repository binding is active') })
+    // The main Session's shell is not bound to a repository either; GitHub commands require an active ticket binding.
+    await expect(exec('gh', ['api', 'user'], { env: { PATH: [bin, join(dir, 'real'), '/usr/bin', '/bin'].join(':'), HOME: dir } }))
+      .rejects.toMatchObject({ code: 1, stderr: expect.stringContaining('no repository binding is active') })
+    // The helper reads git's credential request and answers only for the ticket repository.
+    const helper = join(dir, 'worker-credential-helper')
+    const ask = (repository: string, path: string) => new Promise<{ code: number | null; stdout: string; stderr: string }>(resolve => {
+      const child = spawn(helper, ['get'], { env: worker(repository) })
+      let stdout = '', stderr = ''
+      child.stdout.on('data', chunk => { stdout += String(chunk) })
+      child.stderr.on('data', chunk => { stderr += String(chunk) })
+      child.on('close', code => resolve({ code, stdout, stderr }))
+      child.stdin.end(`protocol=https\nhost=github.com\npath=${path}.git\n\n`)
+    })
+    expect((await ask('acme/widgets', 'acme/widgets')).stdout).toBe('protocol=https\nhost=github.com\npath=acme/widgets.git\n')
+    expect(await ask('acme/widgets', 'acme/other')).toMatchObject({ code: 1, stderr: expect.stringContaining("outside this ticket's repository") })
+    expect(await ask('acme/widgets', '')).toMatchObject({ code: 1, stderr: expect.stringContaining("outside this ticket's repository") })
   })
   it('make `lark-cli` fail without a Feishu bot and each blocked command fail with the agent\'s login', async () => {
     await writeEnvironment(testDeployment({ stateDir: dir, feishu: undefined }), ['personal-gh'])
@@ -43,7 +82,8 @@ describe('worker shims', () => {
     const base = testDeployment()
     await writeEnvironment(testDeployment({ stateDir: dir, github: { ...base.github, cli: gh }, feishu: { ...base.feishu!, cli: lark } }), ['gh', 'git', 'lark-cli'])
     const bin = workerBin(dir)
-    expect([(await exec(join(bin, 'gh'), ['api', 'user'])).stdout, (await exec(join(bin, 'lark-cli'), ['im'])).stdout]).toEqual(['gh api user\n', 'lark im\n'])
+    expect([(await exec(join(bin, 'gh'), ['api', 'user'], { env: { ...process.env, DSH_SUPERAGENT_GITHUB_REPOSITORY: 'acme/widgets' } })).stdout,
+      (await exec(join(bin, 'lark-cli'), ['im'])).stdout]).toEqual(['gh api user\n', 'lark im\n'])
     expect(readdirSync(bin)).not.toContain('git')
   })
   it('replace only what dsh-superagent wrote and refuse anything else in its places', async () => {
@@ -84,7 +124,7 @@ describe('agent git configuration', () => {
     await git('init', '-q', 'repo')
     await exec('git', ['-C', 'repo', 'remote', 'add', 'origin', 'git@github.com:acme/widgets.git'], { cwd: dir, env })
     expect(await git('-C', 'repo', 'remote', 'get-url', '--push', 'origin')).toBe('https://github.com/acme/widgets.git')
-    expect(await git('config', '--show-origin', '--get-all', 'credential.https://github.com.helper')).toBe(`file:${workerGitConfig(dir)}\t${credentialHelper('/opt/agent tools/gh')}`)
+    expect(await git('config', '--show-origin', '--get-all', 'credential.https://github.com.helper')).toBe(`file:${workerGitConfig(dir)}\t${credentialHelper(dir)}`)
     expect(await git('config', '--get-all', 'credential.helper')).toBe('')
     await expect(git('config', 'commit.gpgsign')).rejects.toThrow()
     await expect(git('config', 'core.abbrev')).rejects.toThrow()
@@ -102,7 +142,8 @@ it('fails instead of asking the operator\'s askpass helpers when the agent\'s cr
   const agent = program(join(dir, 'real', 'gh'), 'exit 0')
   const deployment = testDeployment({ stateDir: dir, github: { ...testDeployment().github, cli: agent } })
   await writeEnvironment(deployment, [])
-  const env = workerEnv({ PATH: process.env.PATH, HOME: dir, GIT_ASKPASS: askpass, SSH_ASKPASS: askpass, ...agentVariables(dir) })
+  const env = workerEnv({ PATH: process.env.PATH, HOME: dir, GIT_ASKPASS: askpass, SSH_ASKPASS: askpass,
+    DSH_SUPERAGENT_GITHUB_REPOSITORY: 'acme/widgets', ...agentVariables(dir) })
   await exec('git', ['init', '-q', 'repo'], { cwd: dir, env })
   await exec('git', ['-C', 'repo', 'config', 'core.askPass', askpass], { cwd: dir, env })
   const fill = exec('git', ['-C', 'repo', 'credential', 'fill'], { cwd: dir, env, timeout: 10_000 })

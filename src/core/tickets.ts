@@ -40,8 +40,15 @@ export class Tickets extends EnginePart {
     // Fall back to the last trigger for Evals recorded before `primary` existed.
     const primary = this.repo.triggers.get(evaluation.primary ?? triggerIds.at(-1)!)
     const origin = { triggerId: primary?.id ?? triggerIds[0]!, triggerIds }
-    // A repository-less Source's request takes the binding acceptance chose, never a repository looked up later.
-    const repositoryId = primary?.repositoryId ?? this.options.repositoryFor?.(primary) ?? null
+    // A repository-less Source stays repository-less unless the accept explicitly selected a binding; no "current" repository is guessed.
+    const selected = outcome.repositoryId
+    if (selected !== undefined && this.options.repositoryExists && !this.options.repositoryExists(selected)) {
+      throw new Error(`The selected repository binding does not exist: ${selected}`)
+    }
+    if (primary?.repositoryId != null && selected !== undefined && selected !== primary.repositoryId) {
+      throw new Error('A Ticket cannot be accepted under a repository binding other than its Trigger\'s')
+    }
+    const repositoryId = primary?.repositoryId ?? selected ?? null
     // Every repository-bound Trigger of one Eval must agree; repository-less Triggers take the binding acceptance chose.
     for (const triggerId of triggerIds) {
       const found = this.repo.triggers.get(triggerId)

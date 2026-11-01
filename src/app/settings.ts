@@ -54,7 +54,7 @@ const BLOCKS: Record<'policy' | 'eval' | 'executor' | 'source', Block> = {
 
 /** Host dependencies used by `Settings`. */
 export interface SettingsHost {
-  readonly store: Pick<Store, 'settings' | 'saveSettings' | 'blockRevision' | 'atomic' | 'tickets' | 'get'>
+  readonly store: Pick<Store, 'settings' | 'saveSettings' | 'blockRevision' | 'atomic' | 'tickets' | 'get' | 'repositories'>
   readonly sources: SourceRegistry
   /** Notified when a settings save changes the policy version. */
   readonly engine: EngineForSettings
@@ -114,6 +114,7 @@ export class Settings {
     const settings = store.settings(), revision = (block: SettingsSave) => store.blockRevision(block)
     const { rules, sources: parts } = settings.policy
     return { revision: store.get(KV.settings.revision) ?? 0,
+      repositories: store.repositories.list().map(binding => ({ id: binding.id, provider: binding.provider, slug: binding.slug, webUrl: binding.webUrl, enabled: binding.enabled })),
       pause: { revision: revision('pause'), value: { paused: settings.paused } },
       eval: { revision: revision('eval'), value: settings.eval },
       executor: { revision: revision('executor'), value: settings.executor },
@@ -237,7 +238,7 @@ export class Settings {
       const instance = sources.instance(id)
       const kind = instance && sources.kind(instance.kind)
       if (!instance || !kind?.policy?.sync) throw new UserError('nothingToSync', { source: id })
-      const part = await kind.policy.sync.run(this.host.sourceHost, sources.policyPart(id)!, this.host.lifetime)
+      const part = await kind.policy.sync.run(this.host.sourceHost, id, sources.policyPart(id)!, this.host.lifetime)
       if (revision !== store.blockRevision('policy')) throw new SettingsConflict('Policy changed during synchronization. Retry with the current settings.')
       const policy = store.settings().policy
       // Skip saving a new revision when the synced list is unchanged.
@@ -264,7 +265,7 @@ export class Settings {
     const kind = instance && sources.kind(instance.kind)
     if (!kind?.refreshLabels) throw new UserError('noLabels')
     const before = store.get(KV.sources.labels(id)) ?? {}
-    const after = await kind.refreshLabels(this.host.sourceHost)
+    const after = await kind.refreshLabels(this.host.sourceHost, id)
     return { added: Object.entries(after).filter(([key]) => !(key in before)).map(([, name]) => name).sort((a, b) => a.localeCompare(b)) }
   }
 }

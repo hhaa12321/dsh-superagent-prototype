@@ -51,9 +51,9 @@ it('names the Thread of each dropped message: the one of the Trigger its Channel
 })
 
 function views() {
-  store.saveSettings(SettingsSchema.parse({ policy: { sources: { feishu: { allowed: [{ id: 'ou_alice', name: 'Alice' }] },
-    github: { allowed: [{ id: 'alice' }] } },
-    rules: [{ id: 'copy', name: 'Copy fixes', enabled: true, instruction: 'Fix copy' }] } }))
+  store.saveSettings(SettingsSchema.parse({ sources: { feishu: { kind: 'feishu', enabled: true, config: {} }, github: { kind: 'github', enabled: true, config: { repository: 'acme/widgets', cli: 'gh' } } },
+    policy: { sources: { feishu: { allowed: [{ id: 'ou_alice', name: 'Alice' }] }, github: { allowed: [{ id: 'alice' }] } },
+      rules: [{ id: 'copy', name: 'Copy fixes', enabled: true, instruction: 'Fix copy' }] } }))
   const sources = new SourceRegistry(() => store.settings())
   sources.register(feishuKind); sources.register(githubKind)
   return { store, sources, links }
@@ -180,8 +180,8 @@ it('says no Source runs when every Source is off, and states a Source missing or
   const host = views()
   expect(problems(host).map(item => item.kind)).not.toContain('no-source')
   const settings = store.settings()
-  store.saveSettings({ ...settings, sources: { feishu: { enabled: false, config: {} }, github: { enabled: false, config: {} },
-    jira: { enabled: true, config: { site: 'acme' } } } })
+  store.saveSettings({ ...settings, sources: { feishu: { kind: 'feishu', enabled: false, config: {} }, github: { kind: 'github', enabled: false, config: {} },
+    jira: { kind: 'jira', enabled: true, config: { site: 'acme' } } } })
   expect(problems(host).map(item => item.kind)).toContain('no-source')
   expect(Object.fromEntries(sourcesStatus(host, {}, {}).map(source => [source.id, [source.state, source.installed]])))
     .toEqual({ feishu: ['off', true], github: ['off', true], jira: ['missing', false] })
@@ -201,11 +201,11 @@ it('words each settings save by what it changed from the one before, and nothing
     feishu: { ...first.policy.sources.feishu!, allowed: entries } } })
   const alice = { id: 'ou_alice', name: 'Alice Liu' }, bob = { id: 'ou_bob', name: 'Bob' }
   store.saveSettings({ ...first, policy: allowed([alice, bob, { id: 'ou_carol' }]), paused: true,
-    sources: { ...first.sources, feishu: { enabled: false, config: {} } },
+    sources: { ...first.sources, feishu: { kind: 'feishu', enabled: false, config: {} } },
     executor: { ...first.executor, directory: '/srv/work', prepare: 'npm ci', blockedCommands: ['rm', 'curl'] } })
   const second = store.settings()
   store.saveSettings({ ...second, policy: allowed([alice, { id: 'ou_carol' }]), paused: false, sources: { ...second.sources,
-    feishu: { enabled: true, config: {} } } })
+    feishu: { kind: 'feishu', enabled: true, config: {} } } })
   const changes = (revision: number) => policyHistory(store, host.sources, 'v').items.find(item => item.revision === revision)!.changes
   const revision = store.get(KV.settings.revision)!
   expect(changes(revision - 1)).toEqual([
@@ -222,7 +222,7 @@ it('words each settings save by what it changed from the one before, and nothing
 })
 
 it('names a listed bot as the Policy lists it, and gives a bot\'s Mandate a basis fact of its own', () => {
-  store.saveSettings(SettingsSchema.parse({ policy: { sources: { feishu: { allowed: [], bots: [{ id: 'cli_review', name: '评审机器人' }] } } } }))
+  store.saveSettings(SettingsSchema.parse({ sources: { feishu: { kind: 'feishu', enabled: true, config: {} } }, policy: { sources: { feishu: { allowed: [], bots: [{ id: 'cli_review', name: '评审机器人' }] } } } }))
   const sources = new SourceRegistry(() => store.settings())
   sources.register(feishuKind)
   const view = snapshot({ store, sources, links })

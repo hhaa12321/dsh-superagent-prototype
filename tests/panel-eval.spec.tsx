@@ -135,7 +135,7 @@ it('shows the current Policy version once, explains what makes it up, and opens 
 })
 
 it('sets the Feishu admission table per receiving scope, offering only the cells a scope can receive, and warns when anyone may originate work', async () => {
-  server.settings = { ...server.settings, sources: { ...server.settings.sources, feishu: { enabled: true, config: { cli: 'lark-bot',
+  server.settings = { ...server.settings, sources: { ...server.settings.sources, feishu: { kind: 'feishu', enabled: true, config: { cli: 'lark-bot',
     chats: [{ chatId: 'oc_team', listen: 'all' }, { chatId: 'oc_other', listen: 'mentions' }], directMessages: true,
       otherChats: 'none' } } } }
   await mount()

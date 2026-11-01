@@ -21,7 +21,8 @@ import type { Deployment, Machine } from '../deployment.ts'
 import type { RepositoryBinding } from '../repository.ts'
 import { environmentOf, ticketEnvironment, type Variable } from './execution-environment.ts'
 import type { SetupProblem } from '../setup.ts'
-import { DshExecutor, sourceTrigger, triggerMessage, workerSessionId } from '../executor/dsh.ts'
+import { DshExecutor, sourceTrigger, ticketOfSession, triggerMessage, workerSessionId } from '../executor/dsh.ts'
+import { registerShellEnvironment } from './shell-environment.ts'
 import { ticketCard } from './cards.ts'
 import { MasterAssessor } from './assessment.ts'
 import { KV } from '../kv.ts'
@@ -120,6 +121,11 @@ export class Runtime extends Service implements SourceHost {
       const links: LinkHost = { store, links: this.sourceLinks, commands, sources, lifetime: this.lifetime }
       const link = (trigger: Trigger, signal?: AbortSignal) => sourceLink(links, trigger, signal)
       const environment = (ticket: Ticket) => this.ticketEnvironment(ticket)
+      // Each worker shell command receives its Ticket binding, which the generated gh shim and git credential helper enforce.
+      this.disposers.push(registerShellEnvironment({ ctx, ticketOfSession: id => { const ticketId = ticketOfSession(id); return ticketId ? store.tickets.get(ticketId) : undefined },
+        repositoryOf: ticket => ticket.repositoryId ? store.repositories.get(ticket.repositoryId) : undefined,
+        credentialOf: binding => this.setup.configured() ? this.setup.deployment.credentials[binding.credentialId] : undefined,
+        triggerOf: ticket => store.triggers.get(ticket.origin.triggerId) }))
       const resources: ResourceHost = { store, pages: new TextCache(4_000_000), prompts, commands, masterId, context: ctx,
         commandsFor: (repositoryId?: string) => this.commandsFor(repositoryId),
         promptVersion: id => this.sessions.promptVersion(id), mayRead: (id, revision) => this.sessions.mayRead(id, revision),
@@ -144,12 +150,9 @@ export class Runtime extends Service implements SourceHost {
       const engine = this.engine = new Engine({ repo: store, scope: sources, policy, assessor, executor,
         outbox, prepareTicket: (ticket, outcome) => executor.prepare(ticket, outcome),
         // Acceptance binds a repository-less request to the one enabled binding, and records it on the ticket.
-        repositoryFor: () => {
-          const enabled = store.repositories.list().filter(binding => binding.enabled)
-          return enabled.length === 1 ? enabled[0]!.id : null
-        },
         // A Thread reference resolves its Source instance's binding before the Thread exists, so a worker cannot follow another repository's Thread.
         threadRepository: ref => sources.bindingOf(ref.source)?.id ?? ref.repositoryId ?? null,
+        repositoryExists: repositoryId => !!store.repositories.get(repositoryId),
         emit: event => {
           // Notify the main Session only about domain events it did not initiate itself.
           const notice = this.quiet ? undefined : eventNotice(event, id => store.tickets.get(id))
@@ -189,7 +192,7 @@ export class Runtime extends Service implements SourceHost {
   get health(): Readonly<Record<string, Health>> { return this.board.all }
   /** Aborted when dsh-superagent stops or loses its state directory lock, cancelling running reads and subprocesses. */
   get lifetime(): AbortSignal { return this.stopped.signal }
-  context(kind: { kind: string; health: readonly string[] }, sourceId?: string): SourceContext {
+  context(kind: { kind: string; health: readonly string[] }, sourceId: string): SourceContext {
     return sourceContextOf(this.sourceDeps, kind, sourceId)
   }
   /** The GitHub Source context scoped to a ticket's RepositoryBinding; the ticket's own binding is never replaced. */

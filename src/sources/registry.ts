@@ -54,28 +54,23 @@ export class SourceRegistry implements SourceScope {
     }))
   }
   kind(id: string): SourceKind | undefined { return this.kinds.get(id) }
-  /** The installed kind of the Source instance stored under `id`, or of `id` itself when it is a kind name. */
+  /** The installed kind of the Source instance stored under `id`; an unconfigured ID is not a kind. */
   kindOf(sourceId: string, settings = this.settings()): SourceKind | undefined {
     const stored = settings.sources[sourceId]
-    return this.kinds.get(stored?.kind ?? sourceId)
+    return stored ? this.kinds.get(stored.kind) : undefined
   }
   /** Every configured instance ordered by `sourceId`, followed by stored instances whose kind is not installed (with their config kept as stored). */
   instances(settings = this.settings()): (SourceInstance & { installed: boolean })[] {
-    const result: (SourceInstance & { installed: boolean })[] = []
-    for (const kind of [...this.kinds.values()].sort((a, b) => a.kind.localeCompare(b.kind))) {
-      const stored = Object.entries(settings.sources).filter(([id, value]) => (value.kind ?? id) === kind.kind)
-      const entries: [string, (Settings['sources'][string] | undefined)][] = stored.length ? stored : [[kind.kind, undefined]]
-      for (const [id, value] of entries) result.push({ ...this.resolve(id, kind, value), installed: true })
-    }
-    for (const [id, stored] of Object.entries(settings.sources)) {
-      if (this.kinds.has(stored.kind ?? id)) continue
-      result.push({ id, kind: stored.kind ?? id, enabled: stored.enabled, config: stored.config, repositoryId: this.binding(id)?.id ?? null, installed: false })
-    }
-    return result.sort((a, b) => a.id.localeCompare(b.id))
+    return Object.entries(settings.sources).map(([id, stored]) => {
+      const kind = this.kinds.get(stored.kind)
+      return kind ? { ...this.resolve(id, kind, stored), installed: true }
+        : { id, kind: stored.kind, enabled: stored.enabled, config: stored.config, repositoryId: this.binding(id)?.id ?? null, installed: false }
+    }).sort((a, b) => a.id.localeCompare(b.id))
   }
   instance<C extends Record<string, unknown>>(id: string, settings = this.settings()): SourceInstance<C> | undefined {
-    const kind = this.kindOf(id, settings)
-    return kind ? this.resolve(id, kind, settings.sources[id]) as SourceInstance<C> : undefined
+    const stored = settings.sources[id]
+    const kind = stored && this.kinds.get(stored.kind)
+    return kind ? this.resolve(id, kind, stored) as SourceInstance<C> : undefined
   }
   /** Instances of one kind in `sourceId` order; the canonical instance `kind` exists even when none is stored. */
   instancesOfKind(kindId: string, settings = this.settings()): SourceInstance[] {
@@ -97,9 +92,9 @@ export class SourceRegistry implements SourceScope {
     return binding ? commands.withRepository(binding) : commands
   }
   validate(id: string, value: { enabled: boolean; config: unknown } & { kind?: string }): { kind: string; enabled: boolean; config: Record<string, unknown> } {
-    const kindId = value.kind ?? this.settings().sources[id]?.kind ?? id
-    const kind = this.kinds.get(kindId)
-    if (!kind) throw new Error(`Source kind not installed: ${kindId}`)
+    const kindId = value.kind ?? this.settings().sources[id]?.kind
+    const kind = kindId === undefined ? undefined : this.kinds.get(kindId)
+    if (!kind) throw new Error(`Source kind not installed: ${kindId ?? 'unspecified'}`)
     return { kind: kind.kind, enabled: value.enabled, config: kind.schema.parse(value.config) }
   }
   /** Validates each Source instance's part of a submitted Policy against its kind; parts for uninstalled kinds are kept as stored. */
@@ -192,9 +187,9 @@ export class SourceRegistry implements SourceScope {
     return kind.scope ? kind.scope({ meta: input.meta }, instance.config) : { listened: true, observed: false }
   }
   /** Falls back to schema defaults and disables the instance when stored configuration fails validation. */
-  private resolve(id: string, kind: SourceKind, stored: { kind?: string; enabled: boolean; config: Record<string, unknown> } | undefined): SourceInstance {
-    const parsed = kind.schema.safeParse(stored?.config ?? {})
-    return { id, kind: stored?.kind ?? kind.kind, enabled: parsed.success && (stored?.enabled ?? true), config: parsed.success ? parsed.data : kind.schema.parse({}),
+  private resolve(id: string, kind: SourceKind, stored: { kind: string; enabled: boolean; config: Record<string, unknown> }): SourceInstance {
+    const parsed = kind.schema.safeParse(stored.config)
+    return { id, kind: stored.kind, enabled: parsed.success && stored.enabled, config: parsed.success ? parsed.data : kind.schema.parse({}),
       repositoryId: this.binding(id)?.id ?? null }
   }
 }

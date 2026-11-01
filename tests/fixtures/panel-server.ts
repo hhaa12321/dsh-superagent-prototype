@@ -168,6 +168,7 @@ const stateView = (): StateView => ({
 })
 const settingsView = (): ApiResponse<'GET settings'> => ({
   policyVersion: 'abcdef1234567890',
+  repositories: [{ id: 'github:101', provider: 'github', slug: 'acme/widgets', webUrl: 'https://github.com/acme/widgets', enabled: true }],
   blocks: { policy: { value: server.settings.policy, revision: server.revisions.policy ?? 0 },
     eval: { value: server.settings.eval, revision: server.revisions.eval ?? 0 },
     executor: { value: server.settings.executor, revision: server.revisions.executor ?? 0 } },
@@ -239,9 +240,9 @@ function initial(): PanelServer {
     policy: { sources: { feishu: { allowed: [{ id: 'ou_alice', name: 'Alice' }], syncChat: 'oc_team' },
       github: { allowed: [{ id: 'alice' }] } },
       rules: [{ id: 'copy', name: '文案修改', enabled: true, instruction: '修正明确的文案错误' }] },
-    sources: { feishu: { enabled: true, config: { cli: 'lark-bot', chats: [{ chatId: 'oc_team', listen: 'mentions' }],
+    sources: { feishu: { kind: 'feishu', enabled: true, config: { cli: 'lark-bot', chats: [{ chatId: 'oc_team', listen: 'mentions' }],
       directMessages: true } },
-      github: { enabled: true, config: { repository: 'acme/widgets', cli: 'gh-agent' } } },
+      github: { kind: 'github', enabled: true, config: { repository: 'acme/widgets', cli: 'gh-agent' } } },
     executor: { blockedCommands: ['gh-personal'] },
   })
   const ended = ticketSummary({ id: 't0', title: '旧工单', state: 'ended', actions: { retry: false, stop: false },
@@ -365,7 +366,7 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
         return refuse(400, refused.message, { setup: refused.problem })
       }
       restarting = (config.cli ?? '') !== (server.settings.sources[source.kind]?.config.cli ?? '')
-      server.settings = { ...server.settings, sources: { ...server.settings.sources, [source.kind]: { enabled, config } } }
+      server.settings = { ...server.settings, sources: { ...server.settings.sources, [source.kind]: { kind: source.kind, enabled, config } } }
     }
     server.revisions[block] = (server.revisions[block] ?? 0) + 1
     return { restarting, revision: server.revisions[block] }

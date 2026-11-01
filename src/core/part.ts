@@ -13,12 +13,8 @@ export interface EngineOptions {
   executor: Executor
   outbox: Outbox
   prepareTicket?: (ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>) => Ticket
-  /**
-   * Chooses the repository binding of a ticket whose Trigger came from a repository-less Source. Acceptance records the
-   * choice on the ticket, so execution, tools, and credentials never read a process-global repository. Phase 1 binds the
-   * single enabled repository binding; with none or several the choice must come from the assessment in a later phase.
-   */
-  repositoryFor?(trigger: Trigger | undefined): string | null
+  /** Whether a RepositoryBinding exists; acceptance refuses an explicit binding that does not. */
+  repositoryExists?(repositoryId: string): boolean
   /** The repository binding a Thread reference belongs to, resolved by its Source instance when the Thread is not stored yet. */
   threadRepository?(ref: ThreadRef): string | null
   now?: () => string

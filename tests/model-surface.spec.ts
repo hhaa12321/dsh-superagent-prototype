@@ -17,6 +17,7 @@ import { workerSessionId } from '../src/executor/dsh.ts'
 import { Store } from '../src/app/store.ts'
 import { Commands } from '../src/infra/commands.ts'
 import { inputMessage } from '../src/executor/dsh.ts'
+import { declaredVariables } from '../src/app/execution-environment.ts'
 import { credentialHelper, workerGitConfig } from '../src/infra/environment.ts'
 import { IM_WORDS, NOTE_WORDS, checkedImText } from '../src/infra/text.ts'
 import { SettingsSchema } from '../src/policy.ts'
@@ -84,9 +85,9 @@ async function start() {
     [`${BOT} auth status`]: JSON.stringify({ appId: 'cli_bot', brand: 'feishu', identities: { bot: { status: 'ready' } } }),
     [`${BOT} config strict-mode`]: 'strict-mode: bot (source: profile)',
     [`${BOT} api GET /open-apis/bot/v3/info --as bot --format ndjson`]: '{"bot":{"open_id":"ou_bot"},"code":0,"msg":"ok"}',
-    ['git config -z --show-origin --get-all credential.https://github.com.helper']: `file:${workerGitConfig(directory)}\0${credentialHelper(AGENT)}\0`,
+    ['git config -z --show-origin --get-all credential.https://github.com.helper']: `file:${workerGitConfig(directory)}\0${credentialHelper(directory)}\0`,
     ['git config -z --show-scope --get-regexp ^(credential\\..*|http\\..*extraheader)$']:
-      `global\0credential.helper\n\0global\0credential.https://github.com.helper\n${credentialHelper(AGENT)}\0`,
+      `global\0credential.helper\n\0global\0credential.https://github.com.helper\n${credentialHelper(directory)}\0`,
   }
   const reader = (text: string) => ({ readFrom: () => ({ text, nextOffset: text.length, lossy: false }) })
   const subprocess = { spawn: (spec: { argv: readonly string[] }) => {
@@ -137,15 +138,15 @@ async function start() {
     webServer: { host: '127.0.0.1', port: 3082, register: () => () => {} } }
   for (const [name, service] of Object.entries(services)) ctx.reflect.provide(name, service)
   const seed = new Store(join(directory, 'orchestrator.sqlite'))
-  const github = { enabled: true, config: { repository: 'acme/widgets', cli: AGENT } }
-  seed.saveSettings(SettingsSchema.parse({ ...seed.settings(), sources: { github, feishu: { enabled: true, config: { cli: BOT } } } }))
+  const github = { kind: 'github', enabled: true, config: { repository: 'acme/widgets', cli: AGENT } }
+  seed.saveSettings(SettingsSchema.parse({ ...seed.settings(), sources: { github, feishu: { kind: 'feishu', enabled: true, config: { cli: BOT } } } }))
   seed.close()
   const runtime = new Runtime(ctx, testMachine({ stateDir: directory }), () => {})
   await runtime.ready
   runtime.sources.register(feishuKind); runtime.sources.register(githubKind)
   const settings = runtime.store.settings()
   const allowed = { feishu: { allowed: [{ id: MEMBER, name: 'Alice' }], syncChat: CHAT }, github: { allowed: [{ id: 'alice' }] } }
-  const feishuSource = { enabled: true, config: { cli: BOT, chats: [{ chatId: CHAT, listen: 'all' }], directMessages: true } }
+  const feishuSource = { kind: 'feishu', enabled: true, config: { cli: BOT, chats: [{ chatId: CHAT, listen: 'all' }], directMessages: true } }
   runtime.store.saveSettings({ ...settings, policy: { ...settings.policy, sources: allowed }, eval: { ...settings.eval, mode: 'auto' },
     sources: { ...settings.sources, feishu: feishuSource } })
   const run = async (sessionId: string, name: string, args: unknown) =>
@@ -308,7 +309,8 @@ function failures(): Map<string, string> {
   for (const name of ['decision', 'purpose', 'state']) expect(options.has(name), `${name} has options`).toBe(true)
   const tools = { orchestrator: new Set(toolsOf('orchestrator').keys()), worker: new Set(toolsOf('worker').keys()) }
   const registered = (token: string) => tools.orchestrator.has(token) || tools.worker.has(token)
-  const variables = new Set(host.runtime.ticketEnvironment(host.runtime.store.tickets.get(sessions.a)!).map(variable => variable.key))
+  const variables = new Set([...declaredVariables(host.runtime.sources, host.runtime.store.settings()).flatMap(owner => owner.variables.map(variable => variable.key)),
+    ...host.runtime.ticketEnvironment(host.runtime.store.tickets.get(sessions.a)!).map(variable => variable.key)])
   for (const { where, owner, role, text } of surfaces) {
     const fail = (problem: string) => found.set(`${where}: ${problem}`, owner)
     for (const [token] of text.matchAll(/\borchestrator_[a-z_]+/g)) if (!registered(token)) fail(`${token} is not a tool`)

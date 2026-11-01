@@ -38,7 +38,7 @@ export interface SourcePolicyPart<P extends Record<string, unknown>> {
   /** Receiving scopes of the Policy's admission table under `config` (matching `scope().row`); kinds without `rows` use the table's defaults. */
   rows?(config: Record<string, unknown>): AdmissionRowView[]
   /** Optional external roster sync (such as chat members); `ready` reports whether `part` names a target to refresh from. */
-  sync?: { label: Localized; ready(part: P): boolean; run(host: SourceHost, part: P, signal: AbortSignal): Promise<P> }
+  sync?: { label: Localized; ready(part: P): boolean; run(host: SourceHost, sourceId: string, part: P, signal: AbortSignal): Promise<P> }
 }
 /** UI link for a channel address; `triggerId` names the Trigger whose own deep link is preferred when available. */
 export interface ChannelLink { url: string; label: Localized; triggerId?: string }
@@ -109,7 +109,7 @@ export interface SourceKind<C extends Record<string, unknown> = Record<string, u
   /** Policy section for kinds whose senders have their own identity. */
   policy?: SourcePolicyPart<Record<string, unknown> & { allowed: { id: string; name?: string }[] }>
   /** Rereads display names for row keys (such as chat names), stores the resolved names in `KV.sources.labels(kind)`, and returns them. */
-  refreshLabels?(host: SourceHost, signal?: AbortSignal): Promise<Record<string, string>>
+  refreshLabels?(host: SourceHost, sourceId: string, signal?: AbortSignal): Promise<Record<string, string>>
   /** Variables the kind registers with the execution environment and how their values are computed. */
   environment?: { variables: readonly VariableSpec[]; values(input: EnvironmentInput<C>): Record<string, string> }
 }

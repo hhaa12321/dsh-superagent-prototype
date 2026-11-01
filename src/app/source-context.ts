@@ -31,7 +31,7 @@ export interface SourceContextDeps {
  * by `sourceId`, and bound to the active registration, becoming no-ops once unregistered. Commands are scoped to the
  * instance's RepositoryBinding when it has one, so no repository-bound Source can fall back to another repository.
  */
-export function sourceContextOf(deps: SourceContextDeps, kind: { kind: string; health: readonly string[] }, sourceId = kind.kind): SourceContext {
+export function sourceContextOf(deps: SourceContextDeps, kind: { kind: string; health: readonly string[] }, sourceId: string): SourceContext {
   const { store } = deps
   const repository = deps.sources.bindingOf(sourceId)
   const health = deps.sources.healthEntries(sourceId, kind.health)

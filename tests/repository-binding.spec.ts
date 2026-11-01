@@ -161,13 +161,62 @@ it('keeps two Source instances of one kind apart and resolves exactly one persis
   expect(sources.scope({ source: refA.sourceId, meta: { kind: 'issue' } })).toEqual({ listened: true, observed: false, row: 'issues' })
 })
 
-describe('fresh state and resume', () => {
+describe('binding lifecycle and schema', () => {
   let directory: string | undefined
   afterEach(() => { if (directory) rmSync(directory, { recursive: true, force: true }); directory = undefined })
 
-  it('refuses a schema 11 state directory with an instruction to start fresh, without changing it', () => {
+  it('atomically prunes removed Source mappings and disables a binding no Source owns', () => {
+    directory = mkdtempSync(join(tmpdir(), 'repository-binding-'))
+    const store = new Store(join(directory, 'orchestrator.sqlite'))
+    store.repositories.save(A); store.repositories.save(B)
+    store.repositories.bind('github-alpha', A.id); store.repositories.bind('github-beta', B.id)
+    store.repositories.reconcile([{ ...A, slug: 'acme/renamed' }], [{ sourceId: 'github-alpha', repositoryId: A.id }])
+    expect(store.repositories.get(A.id)).toMatchObject({ slug: 'acme/renamed', enabled: true })
+    expect(store.repositories.get(B.id)).toMatchObject({ enabled: false })
+    expect(store.repositories.sources()).toEqual([{ sourceId: 'github-alpha', repositoryId: A.id }])
+    store.close()
+  })
+
+  it('rejects an unversioned database that already holds tables or records, and keeps its contents unchanged', () => {
     directory = mkdtempSync(join(tmpdir(), 'repository-binding-'))
     const path = join(directory, 'orchestrator.sqlite')
+    const db = new DatabaseSync(path)
+    db.exec('CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE ticket (id TEXT PRIMARY KEY, value TEXT NOT NULL)')
+    db.prepare('INSERT INTO ticket VALUES (?,?)').run('t1', '{}')
+    db.close()
+    expect(() => new Store(path)).toThrow('has no schema version but already holds tables or records; start with a new state directory')
+    const after = new DatabaseSync(path)
+    expect(after.prepare('SELECT COUNT(*) AS n FROM ticket').get()).toEqual({ n: 1 })
+    expect(after.prepare("SELECT name FROM sqlite_master WHERE name='repository'").get()).toBeUndefined()
+    after.close()
+  })
+
+  it('stores the repository id in Trigger, Thread, and Ticket columns with indexes for repository-scoped reads', () => {
+    directory = mkdtempSync(join(tmpdir(), 'repository-binding-'))
+    const store = new Store(join(directory, 'orchestrator.sqlite'))
+    const trigger = issue(refA, 12)
+    store.triggers.save(trigger)
+    store.threads.save({ key: threadKey(trigger.threads[0]!), ref: trigger.threads[0]!, repositoryId: A.id, createdAt: at, subscriptions: [],
+      correlated: [], pending: [], meta: {} })
+    store.tickets.save({ id: 't-a', title: 'Fix', decisionId: 'd', repositoryId: A.id,
+      mandate: { strength: 'explicit', policyVersion: 'v', basis: { via: 'listed' }, actor: { source: refA.sourceId, id: 'alice' }, scope: '' },
+      channels: [], assignments: [], inputs: [], undelivered: [], createdAt: at, updatedAt: at, origin: { triggerId: trigger.id, triggerIds: [trigger.id] } })
+    expect(store.db.prepare('SELECT repository_id FROM trigger WHERE id=?').get(trigger.id)).toEqual({ repository_id: A.id })
+    expect(store.db.prepare('SELECT repository_id FROM thread WHERE key=?').get(threadKey(trigger.threads[0]!))).toEqual({ repository_id: A.id })
+    expect(store.db.prepare('SELECT repository_id FROM ticket WHERE id=?').get('t-a')).toEqual({ repository_id: A.id })
+    const indexes = store.db.prepare("SELECT name FROM sqlite_master WHERE type='index'").all().map(row => String(row.name))
+    expect(indexes).toEqual(expect.arrayContaining(['trigger_repository', 'thread_repository', 'ticket_repository']))
+    store.close()
+  })
+})
+
+describe('fresh state and resume', () => {
+  let resumeDirectory: string | undefined
+  afterEach(() => { if (resumeDirectory) rmSync(resumeDirectory, { recursive: true, force: true }); resumeDirectory = undefined })
+
+  it('refuses a schema 11 state directory with an instruction to start fresh, without changing it', () => {
+    resumeDirectory = mkdtempSync(join(tmpdir(), 'repository-binding-'))
+    const path = join(resumeDirectory, 'orchestrator.sqlite')
     const db = new DatabaseSync(path)
     db.exec('CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
     db.prepare('INSERT INTO kv VALUES (?,?)').run('schema', '11')
@@ -180,8 +229,8 @@ describe('fresh state and resume', () => {
   })
 
   it('loads a Ticket created under a binding after a restart, with its workspace and repository context', async () => {
-    directory = mkdtempSync(join(tmpdir(), 'repository-binding-'))
-    const path = join(directory, 'orchestrator.sqlite')
+    resumeDirectory = mkdtempSync(join(tmpdir(), 'repository-binding-'))
+    const path = join(resumeDirectory, 'orchestrator.sqlite')
     const h = harness(settings())
     const ticket = h.accept(refA, 12)
     const store = new Store(path)

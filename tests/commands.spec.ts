@@ -9,7 +9,7 @@ import { SourceRegistry } from '../src/sources/registry.ts'
 import { SettingsSchema } from '../src/policy.ts'
 import { key, type OutboundMessage } from '../src/core/index.ts'
 import { testDeployment, testCommands, githubRef, testRepository } from './fixtures/deployment.ts'
-const sources = new SourceRegistry(() => SettingsSchema.parse({}), undefined, undefined, sourceId => sourceId === 'github' ? testRepository : undefined)
+const sources = new SourceRegistry(() => SettingsSchema.parse({ sources: { github: { kind: 'github', enabled: true, config: { repository: 'acme/widgets', cli: 'gh' } }, feishu: { kind: 'feishu', enabled: true, config: { cli: 'lark-bot' } } } }), undefined, undefined, sourceId => sourceId === 'github' ? testRepository : undefined)
 sources.register(feishuKind); sources.register(githubKind)
 const send = (commands: Commands, message: OutboundMessage) => sources.send(message, commands)
 const agentGithub = { ...testDeployment().github, cli: '/path/agent-gh' }

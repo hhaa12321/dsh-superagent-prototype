@@ -87,6 +87,12 @@ describe('setup', () => {
     await needs('github', 'agentCliNoAccount', {}, source({ repository, cli: program(join(dir, 'bin', 'gh-anonymous'), `echo '{}'`) }))
     expect(() => executable('nothing-here', join(dir, 'bin'))).toThrow('nothing-here is not an executable file on PATH')
   })
+  it('refuses two Source instances that resolve the same repository, so one binding never gets two credentials', async () => {
+    await expect(resolveDeployment(machine(), [
+      { sourceId: 'github-a', kind: 'github', enabled: true, config: { repository: 'acme/widgets', cli: 'gh' } },
+      { sourceId: 'github-b', kind: 'github', enabled: true, config: { repository: 'acme/widgets', cli: 'gh' } },
+    ], probe, path)).rejects.toEqual(setupError('github', 'repositoryDuplicate', { repository: 'acme/widgets', sources: 'github-a, github-b' }))
+  })
   it('reads the Feishu bot from a bot-only lark-cli, or finds none when the Feishu Source names no CLI', async () => {
     expect(await resolveFeishuBot(machine(), {}, probe, path)).toBeUndefined()
     expect(await resolveFeishuBot(machine(), { cli: 'lark-cli' }, probe, path)).toEqual({ cli: join(dir, 'bin', 'lark-cli'), appId: 'cli_bot', brand: 'lark', botId: 'ou_bot', name: 'Widgets Bot' })

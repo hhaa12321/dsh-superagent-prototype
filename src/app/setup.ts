@@ -18,16 +18,15 @@ export interface SetupHost {
 
 /** The setup-read fields of every configured Source instance, by instance ID, so moving or renaming one is noticed. */
 const setupFields = (settings: Settings): string => JSON.stringify(Object.entries(settings.sources).flatMap(([id, source]) => {
-  const keys = SETUP_FIELDS[source.kind ?? id]
+  const keys = SETUP_FIELDS[source.kind]
   return keys ? [[id, keys.map(key => source.config[key] ?? '')]] : []
 }).sort(([a], [b]) => String(a).localeCompare(String(b))))
 export const setupChanged = (before: Settings, after: Settings): boolean => setupFields(before) !== setupFields(after)
 
-/** The configured GitHub instances setup resolves; the canonical `github` instance exists even when none is stored. */
+/** Every configured GitHub instance; a deployment with none fails setup with `repositoryUnset`. */
 function githubSources(settings: Settings): GithubSourceInput[] {
-  const stored = Object.entries(settings.sources).filter(([id, source]) => (source.kind ?? id) === 'github')
-  const entries: [string, Settings['sources'][string] | undefined][] = stored.length ? stored : [['github', settings.sources.github]]
-  return entries.map(([sourceId, source]) => ({ sourceId, kind: 'github', enabled: source?.enabled ?? true, config: source?.config ?? {} }))
+  return Object.entries(settings.sources).filter(([, source]) => source.kind === 'github')
+    .map(([sourceId, source]) => ({ sourceId, kind: 'github', enabled: source.enabled, config: source.config }))
 }
 
 /**
@@ -77,7 +76,7 @@ export class Setup {
     const { machine } = this.host
     const id = block.startsWith('source:') ? block.slice('source:'.length) : undefined
     const source = id === undefined ? undefined : settings.sources[id]
-    const kind = source?.kind ?? id
+    const kind = source?.kind
     const check = kind === 'feishu' ? resolveFeishuBot(machine, source?.config, this.probe())
       : resolveDeployment(machine, githubSources(settings), this.probe())
     await check.catch((error: unknown) => { if (!(error instanceof SetupError) || error.place === id || error.place === kind) throw error })
@@ -101,14 +100,12 @@ export class Setup {
       context.logger.warn('dsh-superagent leaves Feishu out: %s', error.message)
       return undefined
     })
-    // Persist the provider-resolved bindings and the one-to-one Source mapping before any Ticket can be accepted.
-    this.host.store.atomic(() => {
-      for (const binding of deployment.repositories) this.host.store.repositories.save(binding)
-      for (const source of githubSources(settings)) {
-        const binding = deployment.repositories.find(item => item.credentialId === `github:${source.sourceId}`)
-        this.host.store.repositories.bind(source.sourceId, binding?.id)
-      }
-    })
+    // Atomically replace the provider-resolved bindings and Source mapping: removed Sources leave no stale enabled binding.
+    const sources = githubSources(settings)
+    this.host.store.repositories.reconcile(deployment.repositories, sources.flatMap(source => {
+      const binding = deployment.repositories.find(item => item.credentialId === `github:${source.sourceId}`)
+      return binding ? [{ sourceId: source.sourceId, repositoryId: binding.id }] : []
+    }))
     const resolved = { ...deployment, ...(feishu ? { feishu } : {}) }
     const machineProblem = (error: unknown): never => {
       if (error instanceof SetupError) throw error

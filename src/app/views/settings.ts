@@ -25,6 +25,7 @@ export function settingsView(store: Store, sources: SourceRegistry, health: Heal
   const block = <V>(name: 'policy' | 'eval' | 'executor', value: V) => ({ value, revision: store.blockRevision(name) })
   return {
     policyVersion: policyVersion(settings),
+    repositories: store.repositories.list().map(binding => ({ id: binding.id, provider: binding.provider, slug: binding.slug, webUrl: binding.webUrl, enabled: binding.enabled })),
     blocks: { policy: block('policy', settings.policy), eval: block('eval', settings.eval), executor: block('executor',
       settings.executor) },
     sources: sources.instances(settings).map(instance => {

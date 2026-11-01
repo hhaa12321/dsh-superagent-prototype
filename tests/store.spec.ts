@@ -72,20 +72,6 @@ it('reads the working sets alone, in SQLite as in memory, and follows each save'
   expect(ids(store.read.subscribedThreads('github'))).toEqual(['github:2'])
   store.close()
 })
-it('adds the working sets to a database that predates them, from the rows it holds', () => {
-  const path = join(directory, 'orchestrator.sqlite')
-  const db = new DatabaseSync(path)
-  db.exec(`CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE ticket (id TEXT PRIMARY KEY, value TEXT NOT NULL);
-    CREATE TABLE thread (key TEXT PRIMARY KEY, value TEXT NOT NULL)`)
-  db.prepare('INSERT INTO kv VALUES (?,?)').run('schema', String(SCHEMA_VERSION))
-  db.prepare('INSERT INTO ticket VALUES (?,?)').run('t', JSON.stringify(ticket('t', 'open', [{ state: 'running' }])))
-  db.prepare('INSERT INTO thread VALUES (?,?)').run('github:1', JSON.stringify(thread('1', 'github', { pending: ['a'], subscriptions: ['t'] })))
-  db.close()
-  const store = new Store(path)
-  expect([ids(store.tickets.open()), ids(store.tickets.active())]).toEqual([['t'], ['t']])
-  expect([ids(store.threads.active()), ids(store.read.subscribedThreads('github'))]).toEqual([['github:1'], ['github:1']])
-  store.close()
-})
 it('names a thread by its first human trigger', () => {
   const store = new Store(join(directory, 'orchestrator.sqlite'))
   const base = { source: 'github', threads: [{ source: 'github', id: '5' }], actor: { source: 'github', id: 'x' }, meta: {} }
@@ -197,23 +183,6 @@ it('keeps the settings as versions: the current settings are the snapshot of the
   expect(store.settings()).toMatchObject({ paused: true, executor: { maxWorkers: 5 } })
   expect(store.settingsHistory().map(version => [version.revision, version.source])).toEqual([[2, 'internal'], [1, 'panel']])
   expect([store.get(KV.settings.revision), store.blockRevision('pause'), store.keys('settings').filter(name => name === 'settings')]).toEqual([2, 1, []])
-  store.close()
-})
-
-it('replaces a working-set column an earlier build defined otherwise, and drops one this version no longer has', () => {
-  const path = join(directory, 'orchestrator.sqlite')
-  const db = new DatabaseSync(path)
-  db.exec(`CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE ticket (id TEXT PRIMARY KEY, value TEXT NOT NULL);
-    ALTER TABLE ticket ADD COLUMN open INTEGER AS (CASE WHEN value ->> '$.state' = 'open' THEN 1 END);
-    ALTER TABLE ticket ADD COLUMN ref TEXT AS (nullif(value ->> '$.assignments[#-1].ref', ''));
-    CREATE INDEX ticket_open ON ticket(open) WHERE open IS NOT NULL; CREATE INDEX ticket_ref ON ticket(ref) WHERE ref IS NOT NULL`)
-  db.prepare('INSERT INTO kv VALUES (?,?)').run('schema', String(SCHEMA_VERSION))
-  db.prepare('INSERT INTO ticket (id, value) VALUES (?,?)').run('t', JSON.stringify(ticket('t', 'open', [{ state: 'running' }])))
-  db.close()
-  const store = new Store(path)
-  // The open set reads the ticket's end now.
-  expect(ids(store.tickets.open())).toEqual(['t'])
-  expect(store.db.prepare("SELECT name FROM pragma_table_xinfo('ticket') WHERE name = 'ref'").all()).toEqual([])
   store.close()
 })
 

@@ -9,7 +9,7 @@ import type { Thread, Ticket, Trigger } from '../src/core/index.ts'
 const MEMBER = 'ou_alice'
 const CHAT = 'oc_team'
 const OBSERVED = 'oc_1111111111111111111111111111'
-const feishuSource = (config: { chats: { chatId: string; listen: 'mentions' | 'all' }[]; directMessages: boolean }, enabled = true) => ({ enabled, config })
+const feishuSource = (config: { chats: { chatId: string; listen: 'mentions' | 'all' }[]; directMessages: boolean }, enabled = true) => ({ kind: 'feishu', enabled, config })
 const base = SettingsSchema.parse({
   policy: { sources: { feishu: { allowed: [{ id: MEMBER, name: 'Alice' }], syncChat: CHAT }, github: { allowed: [{ id: 'Alice' }] } } },
   eval: { mode: 'auto' },
@@ -40,13 +40,13 @@ describe('source scope', () => {
     const bare = new SourceRegistry(() => base)
     expect(bare.scope(feishu())).toEqual({ listened: false, reason: 'source_not_installed' })
     expect(bare.scope(github('anyone'))).toEqual({ listened: true, observed: false })
-    const broken = new SourceRegistry(() => SettingsSchema.parse({ sources: { feishu: { enabled: true, config: { chats: 'oops' } } } }))
+    const broken = new SourceRegistry(() => SettingsSchema.parse({ sources: { feishu: { kind: 'feishu', enabled: true, config: { chats: 'oops' } } } }))
     broken.register(feishuKind)
     expect(broken.instance('feishu')).toMatchObject({ enabled: false })
     expect(broken.scope(feishu())).toEqual({ listened: false, reason: 'source_disabled' })
   })
   it('filters everything from a disabled Source', () => {
-    expect(setup({ ...base, sources: { ...base.sources, github: { enabled: false, config: {} } } }).sources.scope(github('anyone'))).toEqual({ listened: false, reason: 'source_disabled' })
+    expect(setup({ ...base, sources: { ...base.sources, github: { kind: 'github', enabled: false, config: {} } } }).sources.scope(github('anyone'))).toEqual({ listened: false, reason: 'source_disabled' })
   })
 })
 describe('gate', () => {
@@ -90,7 +90,7 @@ describe('admission table', () => {
   const STRANGER = 'ou_stranger'
   const withTable = (admission: Record<string, Record<string, string>>, config: Record<string, unknown> = {}, mode: 'off' | 'observe' | 'auto' = 'auto') => SettingsSchema.parse({ ...base,
     eval: { ...base.eval, mode },
-    sources: { ...base.sources, feishu: { enabled: true, config: { ...base.sources.feishu!.config, ...config } } },
+    sources: { ...base.sources, feishu: { kind: 'feishu', enabled: true, config: { ...base.sources.feishu!.config, ...config } } },
     policy: { ...base.policy, sources: { ...base.policy.sources, feishu: { ...base.policy.sources.feishu!, admission } } } })
   const inChat = (chatId: string, sender = MEMBER, addressed = true): Trigger => {
     const message = feishu({ actor: { source: 'feishu', id: sender }, meta: { chatId, direct: false, mentioned: addressed } })
@@ -222,7 +222,7 @@ describe('revalidate and version', () => {
   })
   it('changes the Policy version for rules, accept mode and the Sources\' parts, not for pause, concurrency, models or Source configuration', () => {
     const version = setup().version
-    expect(setup({ ...base, paused: true, executor: { ...base.executor, maxWorkers: 9 }, eval: { ...base.eval, timeoutSeconds: 300 }, sources: { ...base.sources, github: { enabled: true, config: { pollSeconds: 600 } } } }).version).toBe(version)
+    expect(setup({ ...base, paused: true, executor: { ...base.executor, maxWorkers: 9 }, eval: { ...base.eval, timeoutSeconds: 300 }, sources: { ...base.sources, github: { kind: 'github', enabled: true, config: { pollSeconds: 600 } } } }).version).toBe(version)
     expect(setup({ ...base, sources: { feishu: feishuSource({ chats: [], directMessages: false }) } }).version).toBe(version)
     expect(setup({ ...base, eval: { ...base.eval, mode: 'off' } }).version).not.toBe(version)
     expect(setup({ ...base, policy: { ...base.policy, sources: { ...base.policy.sources, github: { allowed: [], admission: {} } } } }).version).not.toBe(version)
@@ -365,7 +365,7 @@ describe('bots and events without a sender', () => {
   const observing = (config: Record<string, unknown>, part: Record<string, unknown> = {},
     mode: 'auto' | 'off' = 'auto') => SettingsSchema.parse({
     policy: { sources: { github: { allowed: [{ id: 'Alice' }], bots: [{ id: 'dependabot[bot]' }], ...part } } }, eval: { mode },
-    sources: { github: { enabled: true, config } } })
+    sources: { github: { kind: 'github', enabled: true, config } } })
   const comment: Trigger = { id: 'b', source: 'github', threads: [{ source: 'github', id: '1' }],
     actor: { source: 'github', id: 'dependabot[bot]' }, human: false, at: '', text: 'Bump lodash',
     meta: { number: 1, isPr: true, kind: 'conversation' } }

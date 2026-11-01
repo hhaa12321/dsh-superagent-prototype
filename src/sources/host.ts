@@ -25,11 +25,8 @@ export interface SourceHost {
   /** Resolves once startup finishes or setup determines what is still missing. */
   readonly ready: Promise<void>
   readonly sources: SourceRegistry
-  /**
-   * Returns the context of one Source instance; its `report` writes only the health entries declared by the kind.
-   * `sourceId` defaults to the kind's canonical instance ID, which is the only instance a Phase 1 deployment runs per kind.
-   */
-  context(kind: { kind: string; health: readonly string[] }, sourceId?: string): SourceContext
+  /** Returns the context of one configured Source instance; its `report` writes only the health entries declared by the kind. */
+  context(kind: { kind: string; health: readonly string[] }, sourceId: string): SourceContext
   /** The context of the source instance bound to `repositoryId`; throws when no installed instance owns it. */
   contextForRepository(repositoryId: string): SourceContext
 }
@@ -76,4 +73,4 @@ export interface SourceContext {
   /** Reports the state of one of this kind's declared health entries; throws for undeclared entry names. */
   report(entry: string, health: Health): void
 }
-export const sourceContext = (host: SourceHost, kind: { kind: string; health: readonly string[] }, sourceId?: string): SourceContext => host.context(kind, sourceId)
+export const sourceContext = (host: SourceHost, kind: { kind: string; health: readonly string[] }, sourceId: string): SourceContext => host.context(kind, sourceId)

@@ -24,29 +24,10 @@ export interface SettingsVersion {
   revision: number; savedAt: string; source: SettingsOrigin | 'internal'; block?: SettingsSave
   policyVersion: string; policyChanged: boolean; notified: string[]; settings: Settings
 }
-/**
- * Generated columns and partial indexes defining active working sets so passes scan only active rows.
- * Older databases missing a column get it added on open and populated by SQLite from stored JSON rows.
- */
-const SETS: Record<string, Record<string, string>> = {
-  ticket: {
-    open: "INTEGER AS (CASE WHEN value -> '$.ended' IS NULL THEN 1 END)",
-    // Only the latest assignment can be pending or running because the Engine closes one before adding the next.
-    active: `INTEGER AS (CASE WHEN json_array_length(value, '$.undelivered') > 0
-      OR value ->> '$.assignments[#-1].state' IN ('pending', 'running') THEN 1 END)`,
-  },
-  thread: {
-    active: "INTEGER AS (CASE WHEN json_array_length(value, '$.pending') > 0 OR value -> '$.evaluating' IS NOT NULL THEN 1 END)",
-    subscribed: "TEXT AS (CASE WHEN json_array_length(value, '$.subscriptions') > 0 THEN value ->> '$.ref.source' END)",
-  },
-  // Composite key (ticketId + thread) used to preserve per-conversation reply order.
-  outbox: { dropped: "TEXT AS (value ->> '$.dropped.at')", pending: `TEXT AS (CASE WHEN value ->> '$.status' = 'pending'
-    AND value ->> '$.ticketId' IS NOT NULL THEN (value ->> '$.ticketId') || ' ' || (value ->> '$.channel.thread') END)` },
-}
 export { SCHEMA_VERSION }
 /**
  * SQLite backing store implementing domain `Repositories`, view read queries, versioned settings, outbox receipts, and key-value state.
- * The Runtime opens it after locking the state directory and automatically migrates supported older schemas on startup.
+ * The schema is fresh and self-contained: it carries generated working-set columns and repository IDs, and never reconciles or migrates an earlier shape.
  * The Engine mutates domain aggregates inside `atomic` transactions while Sources, views, and the Outbox read state or update their own records.
  */
 export class Store implements Repositories {
@@ -67,52 +48,56 @@ export class Store implements Repositories {
       const version = this.get(KV.store.schema)
       if (version !== undefined && version > SCHEMA_VERSION) throw new Error(`Unsupported orchestrator database version ${version}`)
       if (version !== undefined && version < OLDEST_SCHEMA) throw new Error(tooOld(version))
+      // A database with tables or key-value records but no schema marker is not a fresh state directory; stamping it
+      // would reinterpret an unknown shape as the current schema, so the operator must start fresh.
+      if (version === undefined) {
+        const tables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name <> 'kv'").all()
+        const records = Number(this.db.prepare('SELECT COUNT(*) AS n FROM kv WHERE key <> ?').get(KV.store.schema)?.n ?? 0)
+        if (tables.length || records) throw new Error('The orchestrator database has no schema version but already holds tables or records; start with a new state directory')
+      }
       this.atomic(() => {
         this.db.exec(`
           CREATE TABLE IF NOT EXISTS repository (id TEXT PRIMARY KEY, value TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS source_binding (source TEXT PRIMARY KEY, repository TEXT NOT NULL);
-          CREATE TABLE IF NOT EXISTS trigger (id TEXT PRIMARY KEY, value TEXT NOT NULL, at TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS trigger (id TEXT PRIMARY KEY, value TEXT NOT NULL, at TEXT NOT NULL, repository_id TEXT);
           CREATE TABLE IF NOT EXISTS disposition (id TEXT PRIMARY KEY, value TEXT NOT NULL);
-          CREATE TABLE IF NOT EXISTS thread (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-          CREATE TABLE IF NOT EXISTS ticket (id TEXT PRIMARY KEY, value TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS thread (key TEXT PRIMARY KEY, value TEXT NOT NULL, repository_id TEXT,
+            active INTEGER AS (CASE WHEN json_array_length(value, '$.pending') > 0 OR value -> '$.evaluating' IS NOT NULL THEN 1 END),
+            subscribed TEXT AS (CASE WHEN json_array_length(value, '$.subscriptions') > 0 THEN value ->> '$.ref.source' END));
+          CREATE TABLE IF NOT EXISTS ticket (id TEXT PRIMARY KEY, value TEXT NOT NULL, repository_id TEXT,
+            open INTEGER AS (CASE WHEN value -> '$.ended' IS NULL THEN 1 END),
+            active INTEGER AS (CASE WHEN json_array_length(value, '$.undelivered') > 0
+              OR value ->> '$.assignments[#-1].state' IN ('pending', 'running') THEN 1 END));
           CREATE TABLE IF NOT EXISTS decision (id TEXT PRIMARY KEY, thread TEXT NOT NULL, value TEXT NOT NULL);
-          CREATE TABLE IF NOT EXISTS outbox (id TEXT PRIMARY KEY, value TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS outbox (id TEXT PRIMARY KEY, value TEXT NOT NULL,
+            dropped TEXT AS (value ->> '$.dropped.at'),
+            pending TEXT AS (CASE WHEN value ->> '$.status' = 'pending' AND value ->> '$.ticketId' IS NOT NULL
+              THEN (value ->> '$.ticketId') || ' ' || (value ->> '$.channel.thread') END));
           CREATE TABLE IF NOT EXISTS trigger_thread (thread TEXT NOT NULL, id TEXT NOT NULL, at TEXT NOT NULL, human INTEGER NOT NULL,
             PRIMARY KEY (thread, id));
           CREATE TABLE IF NOT EXISTS effect (kind TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, seq INTEGER NOT NULL,
             generation INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', due INTEGER NOT NULL,
             since TEXT NOT NULL, PRIMARY KEY (kind, key));
           CREATE INDEX IF NOT EXISTS trigger_at ON trigger(at);
+          CREATE INDEX IF NOT EXISTS trigger_repository ON trigger(repository_id) WHERE repository_id IS NOT NULL;
+          CREATE INDEX IF NOT EXISTS thread_repository ON thread(repository_id) WHERE repository_id IS NOT NULL;
+          CREATE INDEX IF NOT EXISTS ticket_repository ON ticket(repository_id) WHERE repository_id IS NOT NULL;
+          CREATE INDEX IF NOT EXISTS ticket_open ON ticket(open) WHERE open IS NOT NULL;
+          CREATE INDEX IF NOT EXISTS ticket_active ON ticket(active) WHERE active IS NOT NULL;
+          CREATE INDEX IF NOT EXISTS thread_active ON thread(active) WHERE active IS NOT NULL;
+          CREATE INDEX IF NOT EXISTS thread_subscribed ON thread(subscribed) WHERE subscribed IS NOT NULL;
+          CREATE INDEX IF NOT EXISTS outbox_dropped ON outbox(dropped) WHERE dropped IS NOT NULL;
+          CREATE INDEX IF NOT EXISTS outbox_pending ON outbox(pending) WHERE pending IS NOT NULL;
           CREATE INDEX IF NOT EXISTS trigger_thread_at ON trigger_thread(thread, at);
           CREATE INDEX IF NOT EXISTS decision_thread ON decision(thread);
           CREATE INDEX IF NOT EXISTS effect_due ON effect(kind, due, seq);
         `)
-        this.addColumns()
         if (version !== SCHEMA_VERSION) this.set(KV.store.schema, SCHEMA_VERSION)
       })
     } catch (error) {
       this.db.close()
       throw error
     }
-  }
-  /** Reconciles generated working-set columns and indexes when opening databases created by earlier versions. */
-  private addColumns(): void {
-    const columns = (table: string) => new Set(this.db.prepare('SELECT name FROM pragma_table_xinfo(?)').all(table).map(row => String(row.name)))
-    for (const [table, definitions] of Object.entries(SETS)) {
-      // Drop generated columns whose definition changed or that were removed, along with their index, before adding current ones.
-      const sql = String(this.db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)?.sql ?? '')
-      const generated = this.db.prepare('SELECT name FROM pragma_table_xinfo(?) WHERE hidden IN (2, 3)').all(table).map(row => String(row.name))
-      for (const name of generated) {
-        if (definitions[name] && sql.includes(`${name} ${definitions[name]}`)) continue
-        this.db.exec(`DROP INDEX IF EXISTS ${table}_${name}; ALTER TABLE ${table} DROP COLUMN ${name}`)
-      }
-      const existing = columns(table)
-      for (const [name, definition] of Object.entries(definitions)) {
-        if (!existing.has(name)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`)
-        this.db.exec(`CREATE INDEX IF NOT EXISTS ${table}_${name} ON ${table}(${name}) WHERE ${name} IS NOT NULL`)
-      }
-    }
-    if (!columns('effect').has('generation')) this.db.exec('ALTER TABLE effect ADD COLUMN generation INTEGER NOT NULL DEFAULT 0')
   }
   /** Closes the underlying SQLite database connection. */
   close(): void { this.db.close() }
@@ -213,12 +198,35 @@ export class Store implements Repositories {
     /** Every Source instance with its RepositoryBinding ID, in Source instance ID order. */
     sources: (): { sourceId: string; repositoryId: string }[] =>
       this.db.prepare('SELECT source, repository FROM source_binding ORDER BY source').all().map(row => ({ sourceId: String(row.source), repositoryId: String(row.repository) })),
+    /**
+     * Atomically replaces the resolved binding set and its Source mapping: current bindings are saved, removed Source
+     * mappings are pruned, and a binding no current Source owns is disabled while kept for its existing Tickets.
+     */
+    reconcile: (bindings: readonly RepositoryBinding[], sources: readonly { sourceId: string; repositoryId: string }[]): void => this.atomic(() => {
+      for (const binding of bindings) {
+        this.db.prepare('INSERT INTO repository VALUES (?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value').run(binding.id, JSON.stringify(binding))
+      }
+      const kept = new Set(sources.map(item => item.sourceId))
+      for (const row of this.db.prepare('SELECT source FROM source_binding').all()) {
+        if (!kept.has(String(row.source))) this.db.prepare('DELETE FROM source_binding WHERE source=?').run(String(row.source))
+      }
+      for (const item of sources) {
+        this.db.prepare('INSERT INTO source_binding VALUES (?,?) ON CONFLICT(source) DO UPDATE SET repository=excluded.repository').run(item.sourceId, item.repositoryId)
+      }
+      const referenced = new Set(sources.map(item => item.repositoryId))
+      for (const row of this.db.prepare('SELECT id, value FROM repository').all()) {
+        if (referenced.has(String(row.id))) continue
+        const binding = JSON.parse(String(row.value)) as RepositoryBinding
+        if (binding.enabled) this.db.prepare('UPDATE repository SET value=? WHERE id=?').run(JSON.stringify({ ...binding, enabled: false }), String(row.id))
+      }
+    }),
   }
 
   readonly triggers = {
     get: (id: string): Trigger | undefined => { const row = this.db.prepare('SELECT value FROM trigger WHERE id=?').get(id); return row ? JSON.parse(String(row.value)) as Trigger : undefined },
     save: (trigger: Trigger): void => this.atomic(() => {
-      this.db.prepare('INSERT INTO trigger VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value, at=excluded.at').run(trigger.id, JSON.stringify(trigger), trigger.at)
+      this.db.prepare('INSERT INTO trigger (id, value, at, repository_id) VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value, at=excluded.at, repository_id=excluded.repository_id')
+        .run(trigger.id, JSON.stringify(trigger), trigger.at, trigger.repositoryId ?? null)
       this.indexThreads(trigger)
     }),
     disposition: (id: string): TriggerDisposition | undefined => { const row = this.db.prepare('SELECT value FROM disposition WHERE id=?').get(id); return row ? JSON.parse(String(row.value)) as TriggerDisposition : undefined },
@@ -226,7 +234,8 @@ export class Store implements Repositories {
   }
   readonly threads = {
     get: (keyValue: string): Thread | undefined => { const row = this.db.prepare('SELECT value FROM thread WHERE key=?').get(keyValue); return row ? JSON.parse(String(row.value)) as Thread : undefined },
-    save: (thread: Thread): void => { this.db.prepare('INSERT INTO thread VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(thread.key, JSON.stringify(thread)) },
+    save: (thread: Thread): void => { this.db.prepare('INSERT INTO thread (key, value, repository_id) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, repository_id=excluded.repository_id')
+      .run(thread.key, JSON.stringify(thread), thread.repositoryId ?? null) },
     list: (): Thread[] => this.db.prepare('SELECT value FROM thread ORDER BY rowid').all().map(row => JSON.parse(String(row.value)) as Thread),
     active: (): Thread[] => this.values('SELECT value FROM thread WHERE active = 1 ORDER BY rowid'),
     /** Updates human-facing thread metadata (`label`, `url`, and `facts`, where `null` removes a fact by ID); no-op if the thread does not exist. */
@@ -249,7 +258,8 @@ export class Store implements Repositories {
   }
   readonly tickets = {
     get: (id: string): Ticket | undefined => { const row = this.db.prepare('SELECT value FROM ticket WHERE id=?').get(id); return row ? JSON.parse(String(row.value)) as Ticket : undefined },
-    save: (ticket: Ticket): void => { this.db.prepare('INSERT INTO ticket VALUES (?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value').run(ticket.id, JSON.stringify(ticket)) },
+    save: (ticket: Ticket): void => { this.db.prepare('INSERT INTO ticket (id, value, repository_id) VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value, repository_id=excluded.repository_id')
+      .run(ticket.id, JSON.stringify(ticket), ticket.repositoryId ?? null) },
     /** Newest first. */
     list: (): Ticket[] => this.values('SELECT value FROM ticket ORDER BY rowid DESC'),
     /** Newest first. */

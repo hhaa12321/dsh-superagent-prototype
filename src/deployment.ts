@@ -125,6 +125,7 @@ export async function resolveDeployment(machine: Machine, sources: readonly Gith
   const primary = [...accounts.values()][0]
   if (!primary) throw new SetupError('agentCliUnset')
   const repositories: RepositoryBinding[] = []
+  const owners = new Map<string, string[]>()
   for (const item of usable) {
     if (!item.accounts.repository || !item.accounts.cli) {
       if (item.enabled) throw new SetupError('repositoryUnset')
@@ -138,9 +139,13 @@ export async function resolveDeployment(machine: Machine, sources: readonly Gith
     }))
     if (!access) throw new SetupError('repositoryUnreported', { repository: remote })
     if (access.push !== true) throw new SetupError('repositoryReadOnly', { account: account.login, repository: access.name })
+    const id = repositoryId('github', access.id)
+    const owner = owners.get(id) ?? []
+    if (owner.length) throw new SetupError('repositoryDuplicate', { repository: access.name, sources: [...owner, item.sourceId].join(', ') })
+    owners.set(id, [item.sourceId])
     const credentialId = githubCredentialId(item.sourceId)
     credentials[credentialId] = account
-    repositories.push({ id: repositoryId('github', access.id), provider: 'github', providerRepositoryId: String(access.id), slug: access.name,
+    repositories.push({ id, provider: 'github', providerRepositoryId: String(access.id), slug: access.name,
       webUrl: access.url, credentialId, enabled: item.enabled })
   }
   return { ...machine, github: primary, credentials, repositories }

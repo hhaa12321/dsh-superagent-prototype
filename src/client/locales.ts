@@ -736,6 +736,7 @@ const TEXT = {
   'setup.agentCliNoAccount': ['智能体的 GitHub CLI 没有报告 GitHub 账号。', SETUP_PROBLEMS.agentCliNoAccount[1]],
   'setup.repositoryUnreadable': ['@{account} 读不到 {repository}。', SETUP_PROBLEMS.repositoryUnreadable[1]],
   'setup.repositoryUnreported': ['智能体的 GitHub CLI 没有返回 {repository}。', SETUP_PROBLEMS.repositoryUnreported[1]],
+  'setup.repositoryDuplicate': ['两个 GitHub 来源实例解析到同一个仓库 {repository}：{sources}。一个 binding 只能属于一个仓库。', SETUP_PROBLEMS.repositoryDuplicate[1]],
   'setup.repositoryReadOnly': ['@{account} 没有 {repository} 的推送权限。', SETUP_PROBLEMS.repositoryReadOnly[1]],
   'setup.feishuCliFailed': ['机器人的 lark-cli 不可用。', SETUP_PROBLEMS.feishuCliFailed[1]],
   'setup.feishuNoApp': ['机器人的 lark-cli 的 auth status 没有报告应用。', SETUP_PROBLEMS.feishuNoApp[1]],
