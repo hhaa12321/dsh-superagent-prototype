@@ -17,9 +17,9 @@ export const testRepository: RepositoryBinding = { id: 'github:101', provider: '
   webUrl: 'https://github.com/acme/widgets', credentialId: 'github:github', enabled: true }
 export const githubRef = { sourceId: 'github', repositoryId: testRepository.id }
 export const testDeployment = (overrides: Partial<Deployment> = {}): Deployment => {
-  const github = { cli: '/bin/false', login: 'agent-bot', noreply: '7+agent-bot@users.noreply.github.com' }
+  const github = overrides.github ?? { cli: '/bin/false', login: 'agent-bot', noreply: '7+agent-bot@users.noreply.github.com' }
   return {
-    ...testMachine(), github, credentials: { 'github:github': github }, repositories: [testRepository],
+    ...testMachine(), github, credentials: overrides.credentials ?? { 'github:github': github }, repositories: overrides.repositories ?? [testRepository],
     feishu: { cli: '/bin/false', botId: 'ou_bot', appId: 'cli_bot', brand: 'feishu', name: 'Widgets Bot' },
     ...overrides,
   }

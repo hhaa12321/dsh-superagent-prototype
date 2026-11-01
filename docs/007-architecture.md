@@ -135,7 +135,7 @@ Trigger and Thread `meta` belong to the Source. The core does not interpret them
 
 ### Policy
 
-`src/policy.ts` defines settings schemas, authorization and assessment rules. `settingsPolicy(settings, scope)` returns a fresh, stateless `Policy` on each use:
+`src/policy.ts` defines settings schemas, authorization and assessment rules. `settingsPolicy(settings, scope)` returns a fresh, stateless `Policy` on each use, with `version` for the whole Policy and `versionFor(repositoryId)` for one RepositoryBinding lane (the shared rules and accept mode plus the Policy parts of the Source instances bound to that repository):
 
 - `version`, `paused` and `evalTimeoutMs` describe its current state.
 - `gate(trigger, thread, tickets)` returns admission strength and basis.
@@ -163,7 +163,7 @@ Its interfaces are grouped by purpose:
 
 ### Effects
 
-`Effects` (`src/app/effects.ts`) is the durable side-effect queue. A command calls `enqueue(kind, key, payload)` inside its transaction; execution begins only after commit.
+`Effects` (`src/app/effects.ts`) is the durable side-effect queue. A command calls `enqueue(kind, key, payload)` inside its transaction; execution begins only after commit. A handler may name a scheduler lane (the Executor's `launch` handler uses the Ticket's RepositoryBinding), and ready rows of different lanes then interleave round-robin from the lane after the last one started.
 
 Each kind/key pair has one row. Enqueuing the same waiting key replaces its payload and makes it due immediately without changing queue order. `handle(kind, run, options)` registers one handler per kind. It processes due rows oldest first, up to the concurrency limit.
 
@@ -216,7 +216,7 @@ Its `context`, `read` and `decide` methods serve `orchestrator_eval`, `orchestra
 
 ### Settings
 
-`Settings` (`src/app/settings.ts`) reads and writes revisioned settings blocks. `current` and `view` read them; `save(block, value, revision, origin)` validates a save; `pause(paused, origin)` changes the separate `paused` setting.
+`Settings` (`src/app/settings.ts`) reads and writes revisioned settings blocks. `current` and `view` read them; `save(block, value, revision, origin)` validates a save; `create(input, origin)` adds one Source instance under a derived or explicit ID after its account and repository check; `pause(paused, origin)` changes the separate `paused` setting. Saving a repository-bound instance's switch also updates its persisted RepositoryBinding's `enabled` flag but does not restart the process.
 
 Every save declares its origin: `panel`, `tool` or `sync`. Only `panel` can change the execution environment or fields listed in `SETUP_FIELDS` (`src/deployment.ts`).
 
@@ -350,8 +350,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/views/records.ts` | The rows the views share: Triggers, Tickets, Threads, Decisions and Channel links, and `ownersOf`, the owners of follow-ups as one request reads them |
 | `src/app/views/tickets.ts` | The Ticket lists by stage, a Ticket's page, the Mandate basis facts and the Executor's load |
 | `src/app/views/threads.ts` | The Thread lists, a Thread's timeline, the search and the Decision list |
-| `src/app/views/sources.ts` | The Source status: each Source instance's state, its last day's counts, and what it filtered and dropped in that day |
-| `src/app/views/settings.ts` | The settings page's view: each block with its revision, each Source's settings with its kind's form, and the execution environment |
+| `src/app/views/sources.ts` | The Source status: each Source instance's state, its RepositoryBinding and per-binding open Ticket and queued launch counts, its last day's counts, and what it filtered and dropped in that day |
+| `src/app/views/settings.ts` | The settings page's view: each block with its revision, each Source's settings with its kind's form and RepositoryBinding, the bindings list, and the execution environment |
 | `src/app/views/overview.ts` | The overview: Tickets that need a person, problems, the last day's flow and the Executor's load |
 | `src/executor/dsh.ts` | The DshExecutor, `WorkerSlots`, `ticketExecution`, `inputMessage` and `mandateInstructions` |
 | `src/executor/background.ts` | A worker's background work in DeepSeek Harness, the shell jobs its Session owns (`ctx.jobs`) and its subagents (`ctx.subagents`): `runningJobs`, `untilQuiet`, `killJobs`, `collectJobs`, `stopSubagents`, `stopBackground`, `until`, and `cancelled`, the workers whose turn a stop of their subagents cancelled |
@@ -364,7 +364,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/sources/registry.ts` | `SourceRegistry` |
 | `src/sources/host.ts` | `SourceHost`, `SourceContext`, `Health`, `health` and the fixed health texts |
 | `src/sources/poll.ts` | What GitHub and Feishu polling share: `POLL_HORIZON_MS`, `polled`, `cursorAt`, and `pollThreads`, which keeps a failure on its Thread as `pollError` |
-| `src/sources/github.ts` | The GitHub kind and plugin entry, exported as `./github-watch`: a poll round of notifications, the pull requests of open Tickets with their CI, and subscribed Threads |
+| `src/sources/github.ts` | The GitHub kind and plugin entry, exported as `./github-watch`: a poll round of notifications, the pull requests of open Tickets with their CI, and subscribed Threads; while the binding is off, only the open Tickets' pull requests and subscribed Threads |
 | `src/sources/github-trigger.ts` | GitHub comments, reviews, Issue bodies and CI changes as Triggers, and GitHub addresses |
 | `src/sources/github-pull.ts` | The pull request rules: which pull requests a Ticket follows (`claimPull`, `observePull`), the closes it reports to the Engine, and `pullEndNotices`, the chat notice of a Ticket that ended merged or closed |
 | `src/sources/github-channel.ts` | The GitHub Channel: comments and review thread replies, `sent` or `gone` |
@@ -434,6 +434,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/timeline.spec.ts` | A Thread's pages and a Trigger's neighbours by time and then id, with every received Trigger's time in one form |
 | `tests/shell-environment.spec.ts` | The worker shell environment resolves each Session or subagent to its Ticket binding, and the main Session stays unconstrained |
 | `tests/repository-binding.spec.ts` | Repository identity: collision-free Thread keys, Trigger IDs, Tickets, cursors, health, workspaces and PR ownership across two bindings; cross-repository PR refusal; no global repository accessor; a schema 11 refusal; and a resumed Ticket's binding |
+| `tests/multi-repository.spec.ts` | Two GitHub bindings in one process: separate polling, health and cursors; one worker and one PR per binding with colliding native numbers and branch names; a disabled binding's new intake, with its open Tickets still observed; binding-aware Policy lanes and scheduler lanes; per-binding worker CLIs; and restart persistence |
+| `tests/binding-management.spec.ts` | Panel-side binding management: adding a Source instance under a derived or explicit ID, refusing a duplicate, kind change or rebind to another repository ID, allowing a same-ID rename, and switching a binding without a restart |
 | `tests/store.spec.ts` | Repositories and their working sets, in SQLite as in memory, the kv area, with every key of `KV` spelled only in `src/kv.ts`, settings history and queries |
 | `tests/prompts.spec.ts` | Prompt validation, assembly and versions |
 | `tests/cards.spec.ts` | The rules the built-in text must state, file by file |

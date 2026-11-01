@@ -123,6 +123,17 @@ export const POLICY_REVISION = 'mandate-v3'
 export function policyVersion(settings: Settings): string {
   return key(POLICY_REVISION, JSON.stringify({ rules: settings.policy.rules, mode: settings.eval.mode, sources: settings.policy.sources }))
 }
+/**
+ * Version of one RepositoryBinding's authorization lane: the shared rules and accept mode plus the Policy parts of the
+ * Source instances bound to that repository. A change in another repository's allowed list or admission table therefore
+ * leaves this lane's running Evals and Mandates valid. A scope that cannot tell bindings (a test double) keeps the
+ * global version, so every Policy part still counts.
+ */
+export function bindingPolicyVersion(settings: Settings, sources: SourceScope, repositoryId: string | null): string {
+  const scoped = sources.repositoryOf === undefined ? settings.policy.sources
+    : Object.fromEntries(Object.entries(settings.policy.sources).filter(([source]) => (sources.repositoryOf!(source) ?? null) === repositoryId))
+  return key(POLICY_REVISION, JSON.stringify({ rules: settings.policy.rules, mode: settings.eval.mode, sources: scoped }))
+}
 export function allowedSender(settings: Settings, actor: ActorRef): z.infer<typeof AllowedSchema> | undefined {
   return settings.policy.sources[actor.source]?.allowed.find(entry => sameName(entry.id, actor.id))
 }
@@ -152,7 +163,11 @@ export function policyEffects(tickets: readonly Ticket[], old: Settings, now: Se
   Map<string, PolicyEffect> {
   const before = settingsPolicy(old, scope(old)), after = settingsPolicy(now, scope(now))
   const effects = new Map<string, PolicyEffect>()
+  /** The lane a Ticket's authorization lives in: its actor Source's binding, which was the Eval's Thread lane. */
+  const lane = (settings: Settings, scope: SourceScope, source: string) => scope.repositoryOf?.(source) ?? null
   for (const ticket of tickets) {
+    // A change in another repository's lane leaves this Ticket's authorization and matched rules as they were.
+    if (before.versionFor(lane(old, scope(old), ticket.mandate.actor.source)) === after.versionFor(lane(now, scope(now), ticket.mandate.actor.source))) continue
     const rules = (ticket.mandate.basis.rules ?? []).flatMap((id): NonNullable<PolicyEffect['rules']> => {
       const was = old.policy.rules.find(rule => rule.id === id), is = now.policy.rules.find(rule => rule.id === id)
       if (!is?.enabled) return was?.enabled ? [{ id, name: was.name, change: 'disabled' }] : []
@@ -173,6 +188,7 @@ export function policyEffects(tickets: readonly Ticket[], old: Settings, now: Se
 /** Build the active Policy for gating incoming Triggers and revalidating existing Ticket Mandates. */
 export function settingsPolicy(settings: Settings, sources: SourceScope): Policy {
   const version = policyVersion(settings)
+  const versionFor = (repositoryId: string | null): string => bindingPolicyVersion(settings, sources, repositoryId)
   const mode = settings.eval.mode
   /** Gate non-human triggers: only listed bots (as inferred candidates) and senderless system/CI events may pass; other bots are rejected. */
   const machineGate = (trigger: Trigger): GateResult => {
@@ -194,7 +210,7 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
     return { admissible: true, strength: 'inferred', basis: { ...recorded, via: 'admission', cell, observation: { mode } } }
   }
   return {
-    version, paused: settings.paused, evalTimeoutMs: settings.eval.timeoutSeconds * 1000,
+    version, versionFor, paused: settings.paused, evalTimeoutMs: settings.eval.timeoutSeconds * 1000,
     gate(trigger: Trigger, thread, tickets) {
       if (!trigger.human) return machineGate(trigger)
       const allowed = allowedSender(settings, trigger.actor)

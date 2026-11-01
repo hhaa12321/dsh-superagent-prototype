@@ -9,6 +9,12 @@ import { dayAgo, snapshot, type ViewHost } from './records.ts'
 import { preview } from './text.ts'
 
 export type HealthMap = Record<string, Health>
+/** One RepositoryBinding as the panel inspects it; no credential or token is part of the view. */
+export function repositoryView(store: ViewHost['store'], repositoryId: string | null | undefined) {
+  const binding = repositoryId ? store.repositories.get(repositoryId) : undefined
+  return binding && { id: binding.id, provider: binding.provider, providerRepositoryId: binding.providerRepositoryId,
+    slug: binding.slug, webUrl: binding.webUrl, enabled: binding.enabled }
+}
 /** Resolves health entries for a Source instance, treating stale `sourceOff` entries on an enabled Source as `starting`. */
 export function sourceHealth(sources: SourceRegistry, instance: SourceInstance, health: HealthMap) {
   const kind = sources.kind(instance.kind)
@@ -48,10 +54,16 @@ export function sourcesStatus(host: ViewHost, health: HealthMap, setup: SetupSta
     .map(trigger => ({ id: trigger.id, at: trigger.at, actor: view.actor(trigger.actor, trigger.human), preview: preview(trigger.text, 120),
       reason: store.triggers.disposition(trigger.id)?.filtered }))
   const dropped = droppedReplies(host)
+  const launches = store.read.pendingLaunches()
   return sources.instances().map(instance => {
     const { health: parts, ...named } = sourceHealth(sources, instance, health)
     const problem = problemOf(instance.id, setup) ?? problemOf(instance.kind, setup)
+    const repository = repositoryView(store, instance.repositoryId)
+    // Per-binding work counts make one repository's own queue and open Tickets visible, not a process-wide total.
+    const work = repository && { openTickets: store.tickets.open().filter(ticket => ticket.repositoryId === repository.id).length,
+      queuedLaunches: launches.filter(item => store.tickets.get(item.ticketId)?.repositoryId === repository.id).length }
     return { ...named, installed: instance.installed, enabled: instance.enabled, state: sourceState(instance, parts, setup), health: parts,
+      ...repository ? { repository } : {}, ...work ? { work } : {},
       ...problem ? { problem } : {}, stats: stats[instance.id] ?? { received: 0, filtered: 0, lastAt: '' }, filtered: filtered(instance.id),
       dropped: dropped.filter(item => item.channel.source === instance.id) }
   })

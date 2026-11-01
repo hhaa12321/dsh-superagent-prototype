@@ -11,11 +11,15 @@ export type ScopeResult = { listened: true; observed: boolean; row?: string } | 
 /** Source configuration as the domain sees it: listening scope per trigger or per recorded Mandate basis. */
 export interface SourceScope {
   scope(input: { source: string; meta: Record<string, unknown> }): ScopeResult
+  /** The RepositoryBinding of a Source instance, or null for a repository-less one; absent when the scope cannot tell. */
+  repositoryOf?(sourceId: string): string | null
 }
 
 /** Versioned rules; `gate` decides who may originate work. Source scope is not part of Policy. */
 export interface Policy {
   version: string
+  /** The Policy version one RepositoryBinding lane starts Evals and Mandates under; unrelated repositories' Policy parts do not change it. */
+  versionFor(repositoryId: string | null): string
   paused: boolean
   gate(trigger: Trigger, thread: Thread, tickets: Ticket[]): GateResult
   /** Re-check a mandate's gate-layer basis under this policy, such as before an ended ticket resumes. */

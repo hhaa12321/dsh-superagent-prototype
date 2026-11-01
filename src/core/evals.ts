@@ -104,11 +104,13 @@ export class Evals extends EnginePart {
       this.repo.threads.save(thread)
       return
     }
-    const evalId = key('eval', thread.key, policy.version, at, ...thread.pending)
+    // An Eval belongs to its Thread's repository lane, so another binding's Policy change cannot invalidate it.
+    const version = policy.versionFor(thread.repositoryId ?? null)
+    const evalId = key('eval', thread.key, version, at, ...thread.pending)
     const deadline = new Date(Date.parse(at) + policy.evalTimeoutMs).toISOString()
     const { strength, trigger: { actor }, basis } = strongest
     thread.evaluating = { id: evalId, threadKey: thread.key, triggerIds: thread.pending, primary: strongest.trigger.id, strength, actor, basis,
-      policyVersion: policy.version, startedAt: at, deadline }
+      policyVersion: version, startedAt: at, deadline }
     thread.pending = []
     this.repo.threads.save(thread)
     for (const trigger of triggers) {
@@ -214,9 +216,14 @@ export class Evals extends EnginePart {
     if (held?.evaluating?.triggerIds.length === 1) this.finish(held, held.evaluating, { kind: 'ignore', reason: [reason] })
     else if (held) this.reassess(held, { ...reason, triggerId }, [triggerId])
   }
-  /** Start the Evals in progress again under the new Policy version, and say that it changed. */
+  /** Start the Evals in progress again under the new Policy version of their repository lane, and say that the Policy changed. */
   policyChanged(from: string, to: string): void {
-    for (const thread of this.repo.threads.active()) if (thread.evaluating) this.reassess(thread, { code: 'policyChanged' })
+    const policy = this.policy()
+    for (const thread of this.repo.threads.active()) {
+      const evaluation = thread.evaluating
+      // An Eval of a repository whose lane did not change keeps running under its own version.
+      if (evaluation && evaluation.policyVersion !== policy.versionFor(thread.repositoryId ?? null)) this.reassess(thread, { code: 'policyChanged' })
+    }
     this.emit('policy.changed', { from, to })
   }
   /** End a Thread's Eval as unavailable for `reason` and queue its Triggers, except `without`, for a new Eval ahead of the others. */
@@ -245,8 +252,9 @@ export class Evals extends EnginePart {
    * differs from an Eval's, so it never replaces the Decision of an earlier Eval of the same Triggers.
    */
   private ignore(thread: Thread, ids: string[], reason: Reason[], policy: Policy, at: string): void {
-    const evaluation = { id: key('eval', thread.key, 'ignored', policy.version, at, ...ids), threadKey: thread.key, triggerIds: ids, strength: 'inferred' as const,
-      actor: { source: thread.ref.source, id: '' }, basis: { via: 'followup' as const }, policyVersion: policy.version, startedAt: at, deadline: at }
+    const version = policy.versionFor(thread.repositoryId ?? null)
+    const evaluation = { id: key('eval', thread.key, 'ignored', version, at, ...ids), threadKey: thread.key, triggerIds: ids, strength: 'inferred' as const,
+      actor: { source: thread.ref.source, id: '' }, basis: { via: 'followup' as const }, policyVersion: version, startedAt: at, deadline: at }
     this.record(thread, evaluation, { kind: 'ignore', reason })
     thread.pending = thread.pending.filter(id => !ids.includes(id))
     delete thread.expired
@@ -276,13 +284,14 @@ export class Evals extends EnginePart {
     if (thread.pending.includes(trigger.id)) { thread.pending = thread.pending.filter(id => id !== trigger.id); this.repo.threads.save(thread) }
     const id = key('eval', thread.key, 'direct', trigger.id, kind, ...ticketId ? [ticketId] : [], at)
     return { id, threadKey: thread.key, triggerIds: [trigger.id], primary: trigger.id,
-      strength: gate.strength, actor: trigger.actor, basis: gate.basis, policyVersion: policy.version, startedAt: at, deadline: at }
+      strength: gate.strength, actor: trigger.actor, basis: gate.basis, policyVersion: policy.versionFor(thread.repositoryId ?? null), startedAt: at,
+      deadline: at }
   }
   /** Apply an outcome to an Eval of a Thread: the one in progress, or a gate-only one. */
   private decideEval(thread: Thread, evaluation: Evaluation, outcome: AssessmentOutcome): Decision {
     const audit = outcome.audit ? { audit: outcome.audit } : {}
     // Requeue if Policy changed without a live policyChanged call (such as across an upgrade or restart).
-    if (this.policy().version !== evaluation.policyVersion) {
+    if (this.policy().versionFor(thread.repositoryId ?? null) !== evaluation.policyVersion) {
       if (thread.evaluating?.id === evaluation.id) return this.reassess(thread, { code: 'policyChanged' })
       return this.finish(thread, evaluation, { kind: 'unavailable', reason: [{ code: 'policyChanged' }], ...audit })
     }

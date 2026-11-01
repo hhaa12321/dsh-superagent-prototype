@@ -71,15 +71,25 @@ export class Setup {
   }
   /** Defer the restart to the next macrotask so the current HTTP or tool caller receives its response first. */
   restart(): void { setTimeout(this.host.restart, 0) }
-  /** Verify account CLIs for a modified source block before saving, ignoring setup errors belonging to other blocks. */
-  async checkAccounts(block: SettingsBlock, settings: Settings): Promise<void> {
+  /**
+   * Verify account CLIs for a modified source block before saving, ignoring setup errors belonging to other blocks.
+   * Returns the deployment a GitHub check resolved, so the caller can compare immutable repository binding identity.
+   */
+  async checkAccounts(block: SettingsBlock, settings: Settings): Promise<Deployment | undefined> {
     const { machine } = this.host
     const id = block.startsWith('source:') ? block.slice('source:'.length) : undefined
     const source = id === undefined ? undefined : settings.sources[id]
     const kind = source?.kind
-    const check = kind === 'feishu' ? resolveFeishuBot(machine, source?.config, this.probe())
-      : resolveDeployment(machine, githubSources(settings), this.probe())
-    await check.catch((error: unknown) => { if (!(error instanceof SetupError) || error.place === id || error.place === kind) throw error })
+    if (kind === 'feishu') {
+      await resolveFeishuBot(machine, source?.config, this.probe())
+        .catch((error: unknown) => { if (!(error instanceof SetupError) || error.place === id || error.place === kind) throw error })
+      return undefined
+    }
+    return resolveDeployment(machine, githubSources(settings), this.probe())
+      .catch((error: unknown) => {
+        if (!(error instanceof SetupError) || error.place === id || error.place === kind) throw error
+        return undefined
+      })
   }
   async blockCommands(blocked: readonly string[]): Promise<void> {
     if (this.resolved) await writeEnvironment(this.resolved, blocked)

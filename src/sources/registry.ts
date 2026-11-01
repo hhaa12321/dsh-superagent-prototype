@@ -54,6 +54,8 @@ export class SourceRegistry implements SourceScope {
     }))
   }
   kind(id: string): SourceKind | undefined { return this.kinds.get(id) }
+  /** Every installed kind in `kind` order, for the panel's add-source form. */
+  installedKinds(): SourceKind[] { return [...this.kinds.values()].sort((a, b) => a.kind.localeCompare(b.kind)) }
   /** The installed kind of the Source instance stored under `id`; an unconfigured ID is not a kind. */
   kindOf(sourceId: string, settings = this.settings()): SourceKind | undefined {
     const stored = settings.sources[sourceId]
@@ -72,12 +74,14 @@ export class SourceRegistry implements SourceScope {
     const kind = stored && this.kinds.get(stored.kind)
     return kind ? this.resolve(id, kind, stored) as SourceInstance<C> : undefined
   }
-  /** Instances of one kind in `sourceId` order; the canonical instance `kind` exists even when none is stored. */
+  /** Configured instances of one kind in `sourceId` order; none exists until the operator adds one. */
   instancesOfKind(kindId: string, settings = this.settings()): SourceInstance[] {
     return this.instances(settings).filter(instance => instance.kind === kindId && instance.installed)
   }
   /** The binding of a Source instance, if it is repository-bound. */
   bindingOf(sourceId: string): RepositoryBinding | undefined { return this.binding(sourceId) }
+  /** The RepositoryBinding ID of a Source instance, null for a repository-less one (the forms of `SourceScope`). */
+  repositoryOf(sourceId: string): string | null { return this.binding(sourceId)?.id ?? null }
   /** The binding with `id`, from the instance that owns it; a channel may outlive a rebinding of its Source. */
   bindingById(id: string): RepositoryBinding | undefined {
     for (const instance of this.instances()) {

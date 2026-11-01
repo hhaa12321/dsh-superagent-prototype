@@ -75,12 +75,35 @@ async function own(file: string, text: string, mode = 0o644): Promise<void> {
   await rename(temporary, file)
 }
 
-/** The shell fragment that keeps a ticket's shared `gh` CLI from addressing another repository. */
-function bindingGuard(cli: string): string {
+/** One repository slug with the CLI of its binding's credential, in repository order. */
+function credentialOfBinding(deployment: Pick<Deployment, 'repositories' | 'credentials' | 'github'>): { slug: string; cli: string }[] {
+  const result: { slug: string; cli: string }[] = []
+  const seen = new Set<string>()
+  for (const binding of deployment.repositories) {
+    const credential = deployment.credentials[binding.credentialId]
+    if (!credential || seen.has(binding.slug)) continue
+    seen.add(binding.slug)
+    result.push({ slug: binding.slug, cli: credential.cli })
+  }
+  return result
+}
+/** Shell `case` lines selecting a binding's CLI by its repository value, failing closed for an unmapped repository. */
+function cliCase(variable: string, deployment: Pick<Deployment, 'repositories' | 'credentials' | 'github'>): string[] {
+  const entries = credentialOfBinding(deployment)
   return [
-    `real=${shellQuote(cli)}`,
+    `  case "${variable}" in`,
+    ...entries.map(entry => `    ${shellQuote(entry.slug)}) real=${shellQuote(entry.cli)} ;;`),
+    '    *) echo "dsh-superagent: no GitHub credential is configured for this repository binding" >&2; exit 1 ;;',
+    '  esac',
+  ]
+}
+
+/** The shell fragment that keeps a ticket's shared `gh` CLI from addressing another repository, with its binding's credential. */
+function bindingGuard(deployment: Pick<Deployment, 'repositories' | 'credentials' | 'github'>): string {
+  return [
     '  allowed=${DSH_SUPERAGENT_GITHUB_REPOSITORY:-}',
     '  if [ -z "$allowed" ]; then echo "dsh-superagent: no repository binding is active for this shell; GitHub commands are unavailable" >&2; exit 1; fi',
+    ...cliCase('$allowed', deployment),
     '  export GH_REPO="$allowed"',
     '  # `gh api` is the easiest way around the flags below: admit only this repository and the account endpoints the prompts use.',
     '  if [ "$1" = api ]; then',
@@ -115,7 +138,8 @@ function bindingGuard(cli: string): string {
  * Atomically writes worker CLI shims and the isolated git configuration file into the state directory, refusing to overwrite foreign files.
  * Each shim strips the shim directory from PATH before exec so wrapper scripts resolving `gh` or `lark-cli` by name reach the real binary.
  */
-export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' | 'github' | 'feishu'>, blockedCommands: readonly string[]): Promise<void> {
+export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' | 'github' | 'credentials' | 'repositories' | 'feishu'>,
+  blockedCommands: readonly string[]): Promise<void> {
   const { stateDir, github, feishu } = deployment
   const dir = workerBin(stateDir)
   await mkdir(dir, { recursive: true })
@@ -137,9 +161,9 @@ export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' |
   const run = (program: string): string => `${withoutShims}\nexec ${shellQuote(program)} "$@"`
   const fail = (message: string): string => `echo ${shellQuote(message)} >&2\nexit 1`
   // A worker's shell receives the ticket's binding as DSH_SUPERAGENT_GITHUB_REPOSITORY (src/app/shell-environment.ts).
-  // The shim constrains repository selection to it, so the one shared account cannot be pointed at another repository.
+  // The shim selects that binding's CLI, constrains repository selection to it, and fails closed for an unmapped repository.
   await shim('gh', `${withoutShims}
-${bindingGuard(github.cli)}`)
+${bindingGuard(deployment)}`)
   for (const name of new Set(blockedCommands.filter(name => !WORKER_COMMANDS.includes(name)))) {
     await shim(name, fail(`${name} is blocked in this installation; use gh, which acts as ${github.login}.`))
   }
@@ -150,7 +174,6 @@ ${bindingGuard(github.cli)}`)
   await own(workerCredentialHelper(stateDir), [
     '#!/bin/sh',
     MARKER,
-    "real=" + shellQuote(github.cli),
     'if [ -z "${DSH_SUPERAGENT_GITHUB_REPOSITORY:-}" ]; then',
     '  echo "dsh-superagent: no repository binding is active for this shell; GitHub credentials are unavailable" >&2',
     '  exit 1',
@@ -162,6 +185,7 @@ ${bindingGuard(github.cli)}`)
     '    "${DSH_SUPERAGENT_GITHUB_REPOSITORY}"|"${DSH_SUPERAGENT_GITHUB_REPOSITORY}/"*) ;;',
     '    *) echo "dsh-superagent: credentials for $repo are outside this ticket\'s repository ${DSH_SUPERAGENT_GITHUB_REPOSITORY}" >&2; exit 1 ;;',
     '  esac',
+    ...cliCase('$repo', deployment),
     "  printf '%s\\n' \"$input\" | \"$real\" auth git-credential \"$@\"",
   ].join('\n') + '\n', 0o755)
   await own(workerGitConfig(stateDir), [

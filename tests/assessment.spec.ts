@@ -42,7 +42,7 @@ function setup(strength: 'explicit' | 'inferred' = 'inferred', bodies = Array.fr
     effects: { enqueue: () => {}, handle: () => {} }, paused: () => false, deliver: async () => {}, candidateCard: async candidate => ({ eval_id: candidate.evalId }),
   }
   const assessor = new MasterAssessor(host)
-  const policy: Policy = { version: 'v1', paused: false, evalTimeoutMs: 600_000, gate: () => ({ admissible: true, strength, basis: { via: 'followup' } }),
+  const policy: Policy = { version: 'v1', versionFor: () => 'v1', paused: false, evalTimeoutMs: 600_000, gate: () => ({ admissible: true, strength, basis: { via: 'followup' } }),
     revalidate: () => true, admitsInferred: rules => rules.length > 0 }
   const executor: Executor = { start: async () => {}, deliver: async () => {}, stop: async () => {} }
   const scope = { scope: () => ({ listened: true as const, observed: true }) }

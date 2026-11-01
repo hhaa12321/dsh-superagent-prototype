@@ -33,8 +33,13 @@ interface Handler<K extends EffectKind> {
   ordered: boolean
   /** When true, repeated failures do not mark the effect kind's health entry as `error` (used when failures are already surfaced on a ticket). */
   quiet: boolean
+  /**
+   * Scheduler lane of one row, such as a Ticket's RepositoryBinding. Ready rows of different lanes interleave
+   * round-robin from the lane after the last one started, so one busy lane cannot starve the others.
+   */
+  lane?: (payload: EffectPayloads[K]) => string
 }
-type Options<K extends EffectKind> = Partial<Pick<Handler<K>, 'limit' | 'retry' | 'ordered' | 'quiet'>>
+type Options<K extends EffectKind> = Partial<Pick<Handler<K>, 'limit' | 'retry' | 'ordered' | 'quiet' | 'lane'>>
 /** `seq` preserves the row's queue position; `generation` increments on payload updates so a running attempt does not delete a newer payload. */
 interface Row { key: string; value: string; seq: number; generation: number; attempts: number; due: number }
 type Task = { kind: EffectKind; key: string; done: Promise<void> }
@@ -49,6 +54,8 @@ export class Effects {
   private readonly tasks = new Set<Task>()
   /** Kinds whose last dispatch failed; the next dispatch that succeeds refreshes their health. */
   private readonly broken = new Set<EffectKind>()
+  /** Lane of the row this kind started last, so the next dispatch continues with the lane after it. */
+  private readonly laneCursor = new Map<EffectKind, string>()
   private seq: number
   private scheduled = false
   /** Effects run only between `start` and `drain`; rows queued before `start` wait, such as while setup is incomplete. */
@@ -67,8 +74,8 @@ export class Effects {
   handle<K extends EffectKind>(kind: K, run: Handler<K>['run'], options: Options<K> = {}): void {
     if (this.handlers.has(kind)) throw new Error(`The ${kind} effects already have a handler`)
     this.health.set(kind, this.board.claim(kind))
-    const { limit = () => 1, retry = [2000, 60_000], ordered = false, quiet = false } = options
-    this.handlers.set(kind, { run, limit: ordered ? () => Math.min(1, limit()) : limit, retry, ordered, quiet } as unknown as Handler<never>)
+    const { limit = () => 1, retry = [2000, 60_000], ordered = false, quiet = false, lane } = options
+    this.handlers.set(kind, { run, limit: ordered ? () => Math.min(1, limit()) : limit, retry, ordered, quiet, lane } as unknown as Handler<never>)
     this.report(kind)
     this.kick()
   }
@@ -111,14 +118,42 @@ export class Effects {
           : this.store.db.prepare('SELECT key, value, seq, generation, attempts, due FROM effect WHERE kind = ? AND due <= ? ORDER BY seq LIMIT ?')
             .all(kind, this.now(), 16 + running.size)) as unknown as Row[]
         const ready = handler.ordered && running.size ? [] : rows.filter(row => row.due <= this.now() && !running.has(row.key))
-        let room = ready.length ? handler.limit() - running.size : 0
-        for (const row of ready) {
+        const ordered = this.interleave(kind, handler, ready)
+        let room = ordered.length ? handler.limit() - running.size : 0
+        for (const row of ordered) {
           if (room-- <= 0) break
           this.run(kind, handler, row)
+          if (handler.lane) this.laneCursor.set(kind, handler.lane(JSON.parse(row.value) as never))
         }
         if (this.broken.delete(kind)) this.report(kind)
       } catch (error) { this.failed(kind, error) }
     }
+  }
+  /**
+   * Orders ready rows by lane, round-robin from the lane after `laneCursor`, so a busy repository cannot starve another's
+   * launches. Kinds without a lane, and ordered kinds, keep queue order.
+   */
+  private interleave(kind: EffectKind, handler: Handler<never>, ready: Row[]): Row[] {
+    if (!handler.lane || ready.length < 2) return ready
+    const groups = new Map<string, Row[]>()
+    for (const row of ready) {
+      const lane = handler.lane(JSON.parse(row.value) as never)
+      groups.set(lane, [...groups.get(lane) ?? [], row])
+    }
+    if (groups.size < 2) return ready
+    const lanes = [...groups.keys()].sort()
+    const cursor = this.laneCursor.get(kind)
+    const next = cursor === undefined ? 0 : Math.max(0, lanes.findIndex(lane => lane > cursor))
+    const result: Row[] = []
+    for (let round = 0; result.length < ready.length; round++) {
+      let added = false
+      for (let index = 0; index < lanes.length; index++) {
+        const row = groups.get(lanes[(next + index) % lanes.length]!)![round]
+        if (row) { result.push(row); added = true }
+      }
+      if (!added) break
+    }
+    return result
   }
   private run(kind: EffectKind, handler: Handler<never>, row: Row): void {
     const task: Task = { kind, key: row.key, done: Promise.resolve() }

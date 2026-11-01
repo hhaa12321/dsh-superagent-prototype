@@ -137,10 +137,14 @@ function sourceSettings(): SourceView[] {
       health: server.health[`sync:${kind.kind}`] }
     const policy = kind.policy && { fields: kind.policy.fields, explicit: kind.policy.explicit, ...kind.policy.rows
       ? { rows: kind.policy.rows(config) } : {}, ...sync ? { sync } : {} }
+    const repository = kind.kind === 'github' ? { id: 'github:101', provider: 'github', providerRepositoryId: '101',
+      slug: 'acme/widgets', webUrl: 'https://github.com/acme/widgets', enabled: server.settings.sources.github?.enabled ?? true,
+      sourceId: 'github', account: 'agent-bot' } : undefined
     return { id: kind.kind, kind: kind.kind, title: kind.title, description: kind.description, installed: true,
       value: { enabled: server.settings.sources[kind.kind]?.enabled ?? true, config },
         revision: server.revisions[`source:${kind.kind}`] ?? 0,
       restarts: SETUP_FIELDS[kind.kind] ?? [], fields: kind.fields, facts: kind.facts?.(resolved()) ?? {},
+      ...repository ? { repository } : {},
       labels: kind.kind === 'feishu' ? { oc_team: '团队群', oc_other: '另一个群', ...server.joined } : {}, ...problem ? { problem } : {},
       ...policy ? { policy } : {} }
   })
@@ -154,6 +158,8 @@ function sourceStatuses(): SourceStatusRow[] {
       : health.some(item => item.state === 'starting') ? 'starting' : health.some(item => item.state === 'paused') ? 'paused' : 'ready'
     const feishu = kind.kind === 'feishu'
     return { id: kind.kind, title: kind.title, installed: true, enabled, state, health, ...problem ? { problem } : {},
+      ...kind.kind === 'github' ? { repository: { id: 'github:101', provider: 'github', providerRepositoryId: '101', slug: 'acme/widgets',
+        webUrl: 'https://github.com/acme/widgets', enabled }, work: { openTickets: 1, queuedLaunches: 0 } } : {},
       stats: { received: feishu ? 12 : 0, filtered: feishu ? 2 : 0, lastAt: '2026-09-23T00:00:00Z' },
       filtered: feishu ? [] : [{ id: 'e9', at: '2026-09-23T00:02:00Z', actor: actor('github', 'someone'), preview: 'looks wrong',
         reason: { code: 'source_disabled' } }],
@@ -168,7 +174,10 @@ const stateView = (): StateView => ({
 })
 const settingsView = (): ApiResponse<'GET settings'> => ({
   policyVersion: 'abcdef1234567890',
-  repositories: [{ id: 'github:101', provider: 'github', slug: 'acme/widgets', webUrl: 'https://github.com/acme/widgets', enabled: true }],
+  repositories: [{ id: 'github:101', provider: 'github', providerRepositoryId: '101', slug: 'acme/widgets',
+    webUrl: 'https://github.com/acme/widgets', enabled: true, sourceId: 'github', account: 'agent-bot' }],
+  kinds: KINDS.map(kind => ({ kind: kind.kind, title: kind.title, description: kind.description,
+    repositoryBound: kind.repositoryBound === true, createFields: (SETUP_FIELDS[kind.kind] ?? []).flatMap(key => kind.fields.filter(field => field.key === key)) })),
   blocks: { policy: { value: server.settings.policy, revision: server.revisions.policy ?? 0 },
     eval: { value: server.settings.eval, revision: server.revisions.eval ?? 0 },
     executor: { value: server.settings.executor, revision: server.revisions.executor ?? 0 } },
@@ -305,6 +314,16 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
   } },
   'GET sources': { answer: sourceStatuses },
   'GET settings': { answer: settingsView },
+  'POST sources': { body: true, answer: ({ body }): Answer<'POST sources'> => {
+    const kind = KINDS.find(item => item.kind === body.kind)
+    if (!kind) return refuse(400, 'Source kind not installed', { code: 'sourceNotInstalled', values: { source: body.kind } })
+    const id = body.id ?? `github-${String((body.config as { repository?: string }).repository ?? '').replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`
+    if (server.settings.sources[id]) return refuse(400, 'Source exists', { code: 'sourceExists', values: { source: id } })
+    const config = kind.schema.parse(body.config)
+    server.settings = { ...server.settings, sources: { ...server.settings.sources, [id]: { kind: kind.kind, enabled: body.enabled ?? true, config } } }
+    server.revisions[`source:${id}`] = 1
+    return { id, revision: 1, restarting: true }
+  } },
   'POST sources/:id/labels': { answer: () => {
     // Label refresh failures come from the bot CLI and are returned verbatim.
     if (server.joinError) return refuse(500, server.joinError)

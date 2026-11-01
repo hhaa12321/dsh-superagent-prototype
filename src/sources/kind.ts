@@ -85,10 +85,12 @@ export interface TriggerContext {
 }
 /** Pluggable source kind descriptor registered with SourceRegistry. */
 export interface SourceKind<C extends Record<string, unknown> = Record<string, unknown>> {
-  /** Stable ID; a default instance with the same ID exists when none is stored. */
+  /** Stable ID of the implementation; every configured instance has its own `sourceId`. */
   kind: string
   title: Localized
   description: Localized
+  /** True for a kind whose every instance owns exactly one RepositoryBinding and can be added from the panel. */
+  repositoryBound?: boolean
   /** Read-only status facts derived from `deployment` (undefined while waiting for setup), keyed by field key. */
   facts?(deployment: Deployment | undefined): Record<string, Localized | string>
   /** Validates stored and submitted configuration and fills defaults. */

@@ -38,12 +38,13 @@ function scopeOf(meta: Record<string, unknown>): Scope | undefined {
 }
 export const githubKind: SourceKind<GithubConfig> = {
   kind: 'github',
+  repositoryBound: true,
   title: { zh: 'GitHub', en: 'GitHub' },
   description: { zh: '智能体的 GitHub 账号；接收仓库里发给它的通知、已订阅 Issue 与 PR 的讨论、CI 状态变化和 PR 合并关闭。', en: 'The agent\'s GitHub accounts; receives notifications to it in the repository, discussion on subscribed Issues and PRs, CI changes, and PR merge or close.' },
   schema: GithubConfigSchema,
   fields: [
     { key: 'repository', type: 'text', pattern: '[A-Za-z0-9_.\\-]+/[A-Za-z0-9_.\\-]+', label: { zh: '监听的仓库', en: 'Repository' },
-      hint: { zh: '写作 owner/name。这个来源接收这个仓库的通知和讨论；保存时检查智能体账号能否推送到它，然后重启 dsh-superagent。', en: 'Written owner/name. This Source receives the repository\'s notifications and discussion; saving checks that the agent account can push to it, then restarts dsh-superagent.' } },
+      hint: { zh: '写作 owner/name。这个来源接收这个仓库的通知和讨论；保存时检查智能体账号能否推送到它，然后重启 dsh-superagent。已绑定的来源不能改到另一个仓库，请新增来源；仓库改名但 GitHub 仓库 ID 不变时仍可保存。', en: 'Written owner/name. This Source receives the repository\'s notifications and discussion; saving checks that the agent account can push to it, then restarts dsh-superagent. A bound Source cannot switch to another repository; add a new Source. A rename that keeps GitHub\'s repository ID is allowed.' } },
     { key: 'cli', type: 'text', label: { zh: '智能体的 GitHub CLI', en: 'Agent GitHub CLI' },
       hint: { zh: '命令名或绝对路径，通常是用 GH_CONFIG_DIR 登录智能体账号的 gh 包装脚本。智能体以它登录的账号行事，执行器以 gh 调用它。保存时检查它登录的账号能否推送到仓库，然后重启 dsh-superagent。', en: 'A command name or absolute path, usually a gh wrapper signed in to the agent account through GH_CONFIG_DIR. The agent acts as the account it is signed in to, and the Executor calls it as gh. Saving checks that this account can push to the repository, then restarts dsh-superagent.' } },
     { key: 'pollSeconds', type: 'number', advanced: true, min: 60, max: 3600, label: { zh: '轮询间隔 / 秒', en: 'Polling interval / seconds' }, hint: { zh: 'GitHub 要求更长间隔时以 GitHub 为准。', en: 'A longer interval requested by GitHub wins.' } },
@@ -135,6 +136,27 @@ export function apply(ctx: Context): void {
     return async () => { controller.abort(); await running }
   })
 }
+/**
+ * One loop iteration as `watch` decides it: an enabled Source polls its binding in full. A disabled one takes in nothing
+ * new, but still observes the open Tickets it accepted, their pull requests and CI, so they can finish. Other bindings'
+ * loops are unaffected.
+ */
+export async function pollWhenEnabled(ctx: SourceContext, signal?: AbortSignal): Promise<number> {
+  return ctx.config<GithubConfig>() ? pollRound(ctx, signal) : pollEnabledTickets(ctx, signal)
+}
+/** Polls only what open Tickets of this binding need while the binding takes in no new work. */
+async function pollEnabledTickets(ctx: SourceContext, signal?: AbortSignal): Promise<number> {
+  // A Source disabled before setup resolved a binding has nothing to observe.
+  if (!ctx.repository) { ctx.report('github', health('paused', 'sourceOff')); return 60 }
+  const round = newRound(signal, true)
+  const binding = ctx.repository
+  const live = new Set(ctx.tickets.open().filter(ticket => (ticket.repositoryId ?? null) === binding.id).map(ticket => ticket.id))
+  await pollTicketPulls(ctx, signal, round)
+  await pollThreads(ctx, signal, round, thread => thread.subscriptions.some(id => live.has(id)))
+  if (round.failures.length) throw new Error(`${round.failures.length} GitHub reads failed: ${round.failures.slice(0, 3).join('; ')}`)
+  ctx.report('github', health('paused', 'sourceOff'))
+  return 60
+}
 /** The GitHub binding this context polls; setup resolves it before the loop starts. */
 function bindingOf(ctx: SourceContext): NonNullable<SourceContext['repository']> {
   if (!ctx.repository) throw new Error(`GitHub Source ${ctx.sourceId} has no repository binding`)
@@ -165,8 +187,7 @@ async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
   while (!signal.aborted) {
     const config = ctx.config<GithubConfig>()
     try {
-      if (config) interval = await pollRound(ctx, signal)
-      else ctx.report('github', health('paused', 'sourceOff'))
+      interval = await pollWhenEnabled(ctx, signal)
       failures = 0
     } catch (error) {
       failures += 1
@@ -180,10 +201,12 @@ interface Round {
   started: string; signal?: AbortSignal | undefined
   pulls: Map<number, Promise<Pull>>; read: Set<number>; failures: string[]; dropped: number[]; abandoned: number[]
   tally: Tally
+  /** True when the binding is off and only its open Tickets are observed, so a missing config is not a stop. */
+  disabled?: true
 }
-const newRound = (signal?: AbortSignal): Round => ({ started: new Date().toISOString(), signal, pulls: new Map(), read: new Set(),
-  failures: [], dropped: [], abandoned: [], tally: { skipped: 0 } })
-const stopped = (ctx: SourceContext, round: Round): boolean => !!round.signal?.aborted || !ctx.config()
+const newRound = (signal?: AbortSignal, disabled = false): Round => ({ started: new Date().toISOString(), signal, pulls: new Map(), read: new Set(),
+  failures: [], dropped: [], abandoned: [], tally: { skipped: 0 }, ...disabled ? { disabled: true as const } : {} })
+const stopped = (ctx: SourceContext, round: Round): boolean => !!round.signal?.aborted || (!round.disabled && !ctx.config())
 export interface Retry { since: string; pr: boolean; failedAt?: string; attempts?: number }
 const RETRY_WINDOW_MS = 24 * 3600_000
 /** True when GitHub returns HTTP 410 (Gone); HTTP 404 is retried because it can indicate revoked access to a private repository. */
@@ -466,7 +489,8 @@ function nameThread(ctx: SourceContext, number: number, title: string): void {
   ctx.threads.describe(key, { label: `#${number} ${title}`, facts: { number: { value: `#${number}` } } })
 }
 /** Polls subscribed Issue and PR Threads not already read in this round; a deleted (410) Issue is still polled within the horizon (costing one read) and does not fail the round. */
-export async function pollThreads(ctx: SourceContext, signal?: AbortSignal, round = newRound(signal)): Promise<void> {
+export async function pollThreads(ctx: SourceContext, signal?: AbortSignal, round = newRound(signal),
+  active: (thread: Thread) => boolean = () => true): Promise<void> {
   await pollEach(ctx, ctx.sourceId, () => stopped(ctx, round), async thread => {
     try { await pollThread(ctx, round, thread) }
     catch (error) {
@@ -474,7 +498,7 @@ export async function pollThreads(ctx: SourceContext, signal?: AbortSignal, roun
       if (deleted(error)) round.dropped.push(Number(thread.ref.id)); else round.failures.push(`${thread.key}: ${String(error)}`)
       throw error
     }
-  }, thread => round.read.has(Number(thread.ref.id)))
+  }, thread => round.read.has(Number(thread.ref.id)) || !active(thread))
 }
 async function pollThread(ctx: SourceContext, round: Round, thread: Thread): Promise<void> {
   // The default branch's CI Thread has no Issue or PR to read; its CI arrives as Triggers.
