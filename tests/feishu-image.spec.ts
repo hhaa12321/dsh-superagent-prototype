@@ -6,7 +6,7 @@ import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { afterEach, beforeEach, expect, it, vi, type MockInstance } from 'vitest'
 import { Commands } from '../src/infra/commands.ts'
-import { testDeployment } from './fixtures/deployment.ts'
+import { testDeployment, testCommands } from './fixtures/deployment.ts'
 import { admissionImageKeys, readAdmissionImage } from '../src/sources/feishu-image.ts'
 import type { FeishuRef } from '../src/sources/feishu-read.ts'
 
@@ -15,7 +15,7 @@ let agent: Agent
 let saveImage: ReturnType<typeof vi.fn>
 let resolveModelInfo: ReturnType<typeof vi.fn>
 let lark: MockInstance<Commands['lark']>
-const commands = new Commands(() => testDeployment(), {}, new AbortController().signal)
+const commands = testCommands(() => testDeployment())
 const source: FeishuRef = { triggerId: 'source', chatId: 'oc_chat', messageId: 'om_source' }
 const text = '![Image](img_source) Plan mode'
 const ref = { attachmentId: 'image-id', mediaType: 'image/png', bytes: 4, width: 1, height: 1 }

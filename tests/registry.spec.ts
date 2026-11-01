@@ -9,10 +9,11 @@ import { Commands } from '../src/infra/commands.ts'
 import { HealthBoard } from '../src/infra/health.ts'
 import { sourceContextOf, type SourceContextDeps } from '../src/app/source-context.ts'
 import { feishuChannel, feishuTrigger, feishuTriggerId } from '../src/sources/feishu-trigger.ts'
-import { testDeployment } from './fixtures/deployment.ts'
+import { testDeployment, testCommands } from './fixtures/deployment.ts'
 import { feishuKind } from '../src/sources/feishu.ts'
 import { githubKind } from '../src/sources/github.ts'
 
+const source = (kind: string, config: Record<string, unknown> = {}, enabled = true) => ({ kind, enabled, config })
 const probe: SourceKind<{ interval: number }> = {
   kind: 'probe', title: { zh: '探针', en: 'Probe' }, description: { zh: '', en: '' }, health: [],
   schema: z.object({ interval: z.number().int().min(1).default(5) }).strict(),
@@ -21,25 +22,32 @@ const probe: SourceKind<{ interval: number }> = {
 
 describe('Source registry', () => {
   it('lists every installed kind with defaults, in id order, followed by stored instances whose kind is not installed', () => {
-    const settings = SettingsSchema.parse({ sources: { probe: { enabled: false, config: { interval: 9 } }, retired: { enabled: true, config: { x: 1 } } } })
+    const settings = SettingsSchema.parse({ sources: { github: source('github', { repository: 'acme/widgets', cli: 'gh' }), probe: source('probe', { interval: 9 }, false), retired: source('retired', { x: 1 }) } })
     const sources = new SourceRegistry(() => settings)
     sources.register(probe); sources.register(githubKind)
     expect(sources.instances()).toEqual([
-      { id: 'github', kind: 'github', enabled: true, config: { repository: '', cli: '', pollSeconds: 60, failuresBeforeError: 3,
-        observeIssues: false, observePulls: false, observeComments: false, observeCi: false }, installed: true },
-      { id: 'probe', kind: 'probe', enabled: false, config: { interval: 9 }, installed: true },
-      { id: 'retired', kind: 'retired', enabled: true, config: { x: 1 }, installed: false },
+      { id: 'github', kind: 'github', enabled: true, config: { repository: 'acme/widgets', cli: 'gh', pollSeconds: 60, failuresBeforeError: 3,
+        observeIssues: false, observePulls: false, observeComments: false, observeCi: false }, repositoryId: null, installed: true },
+      { id: 'probe', kind: 'probe', enabled: false, config: { interval: 9 }, repositoryId: null, installed: true },
+      { id: 'retired', kind: 'retired', enabled: true, config: { x: 1 }, repositoryId: null, installed: false },
     ])
+  })
+  it('never invents a default instance for an installed kind, and requires every stored instance to name its kind', () => {
+    const sources = new SourceRegistry(() => SettingsSchema.parse({}))
+    sources.register(githubKind)
+    expect(sources.instances()).toEqual([])
+    expect(sources.instance('github')).toBeUndefined()
+    expect(() => SettingsSchema.parse({ sources: { github: { enabled: true, config: {} } } })).toThrow()
   })
   it('validates submitted instances with the kind schema and refuses kinds that are not installed', () => {
     const sources = new SourceRegistry(() => SettingsSchema.parse({}))
     sources.register(probe)
-    expect(sources.validate('probe', { enabled: true, config: {} })).toEqual({ enabled: true, config: { interval: 5 } })
-    expect(() => sources.validate('probe', { enabled: true, config: { interval: 0 } })).toThrow()
-    expect(() => sources.validate('missing', { enabled: true, config: {} })).toThrow('not installed')
+    expect(sources.validate('probe', { kind: 'probe', enabled: true, config: {} })).toEqual({ kind: 'probe', enabled: true, config: { interval: 5 } })
+    expect(() => sources.validate('probe', { kind: 'probe', enabled: true, config: { interval: 0 } })).toThrow()
+    expect(() => sources.validate('missing', { kind: 'missing', enabled: true, config: {} })).toThrow('not installed')
   })
   it('sends, links and reads a kind\'s Threads through its own channel and context, and nothing for a kind without them', async () => {
-    const sources = new SourceRegistry(() => SettingsSchema.parse({ sources: { probe: { enabled: true, config: { interval: 7 } } } }))
+    const sources = new SourceRegistry(() => SettingsSchema.parse({ sources: { probe: source('probe', { interval: 7 }), quiet: source('quiet') } }))
     const sent: OutboundMessage[] = []
     const read: unknown[] = []
     sources.register({ ...probe,
@@ -73,33 +81,35 @@ describe('Source registry', () => {
     expect(await sources.send(message('quiet'), commands)).toBe('gone')
     expect(sources.threadContext({ ...trigger, source: 'quiet' })).toBeUndefined()
   })
-  it('refuses a kind that declares a health entry another kind or dsh-superagent itself reports, and gives up its entries at unregister', () => {
+  it('keeps each Source instance\'s health entries apart and gives them up at unregister', () => {
     const board = new HealthBoard()
-    // Pre-claim built-in health entries; sync:* entries are reserved for settings sync.
-    for (const name of ['runtime', 'reply']) board.claim(name)
     const sources = new SourceRegistry(() => SettingsSchema.parse({}), board)
     const unregister = sources.register(githubKind)
-    expect(() => sources.register({ ...probe, health: ['github'] })).toThrow('declares the health entry github')
-    for (const name of ['runtime', 'reply', 'sync:github']) expect(() => sources.register({ ...probe, health: ['probe', name] })).toThrow(name)
-    expect(sources.kind('probe')).toBeUndefined()
-    sources.register({ ...probe, health: ['probe'] })
-    const context = (kind: { kind: string; health: readonly string[] }) => sourceContextOf({ sources } as unknown as SourceContextDeps, kind)
+    // Two kinds may declare the same entry name: the registry namespaces it by Source instance.
+    sources.register({ ...probe, health: ['github'] })
+    // `sync:` entries belong to Settings, whichever instance would report them.
+    for (const name of ['sync:github', 'sync:probe']) expect(() => sources.register({ ...probe, kind: 'probe2', health: [name] })).toThrow(name)
+    const context = (kind: { kind: string; health: readonly string[] }) => sourceContextOf({ sources } as unknown as SourceContextDeps, kind, kind.kind)
     const first = context(githubKind)
+    const second = context({ ...probe, health: ['github'] })
     first.report('github', { state: 'ready', detail: 'ok' })
-    expect(board.all.github).toEqual({ state: 'ready', detail: 'ok' })
+    second.report('github', { state: 'error', detail: 'probe error' })
+    expect(board.all['github:github']).toEqual({ state: 'ready', detail: 'ok' })
+    expect(board.all['github:probe']).toEqual({ state: 'error', detail: 'probe error' })
     expect(() => first.report('probe', { state: 'ready', detail: '' })).toThrow('has no health entry probe')
     // A report sent after its kind unregisters (such as from an exiting CLI listener) is ignored and does not affect a later registration.
     unregister()
     expect(() => first.report('github', { state: 'error', detail: 'WARN exiting' })).not.toThrow()
-    expect(board.all.github).toBeUndefined()
+    expect(board.all['github:github']).toBeUndefined()
     sources.register(githubKind)
+    // The old context's entries stay released; a fresh context claims them again.
     first.report('github', { state: 'error', detail: 'late' })
-    expect(board.all.github).toEqual({ state: 'starting', detail: '' })
+    expect(board.all['github:github']).toBeUndefined()
     context(githubKind).report('github', { state: 'ready', detail: 'again' })
-    expect(board.all.github).toEqual({ state: 'ready', detail: 'again' })
+    expect(board.all['github:github']).toEqual({ state: 'ready', detail: 'again' })
   })
   it('names the Trigger whose message a Trigger\'s message answers, where its kind can', () => {
-    const sources = new SourceRegistry(() => SettingsSchema.parse({}))
+    const sources = new SourceRegistry(() => SettingsSchema.parse({ sources: { feishu: source('feishu', { cli: 'lark' }), github: source('github', { repository: 'acme/widgets', cli: 'gh' }) } }))
     sources.register(feishuKind); sources.register(githubKind)
     const reply = feishuTrigger({ message_id: 'om_2', chat_id: 'oc_1', chat_type: 'group', sender_id: 'ou_alice', sender_type: 'user',
       content: 'yes', create_time: '1757376000000', parent_id: 'om_1' }, 'ou_bot', 'cli_bot')!
@@ -108,7 +118,7 @@ describe('Source registry', () => {
     expect(sources.repliesTo({ ...reply, source: 'github' })).toBeUndefined()
   })
   it('finds what a search query names in each kind\'s terms', () => {
-    const sources = new SourceRegistry(() => SettingsSchema.parse({}))
+    const sources = new SourceRegistry(() => SettingsSchema.parse({ sources: { feishu: source('feishu', { cli: 'lark' }), github: source('github', { repository: 'acme/widgets', cli: 'gh' }) } }))
     sources.register(feishuKind); sources.register(githubKind)
     expect(sources.find('#12')).toEqual({ threads: ['github:12'], terms: [] })
     expect(sources.find('https://github.com/acme/widgets/pull/7#issuecomment-3')).toEqual({ threads: ['github:7'], terms: [] })
@@ -124,7 +134,7 @@ describe('Source registry', () => {
     expect(sources.instance('probe')).toBeUndefined()
   })
   it('validates each Source\'s part of the Policy with its kind, keeping parts of kinds that are not installed as stored', () => {
-    const sources = new SourceRegistry(() => SettingsSchema.parse({ policy: { sources: { feishu: { allowed: [{ id: 'ou_alice' }] } } } }))
+    const sources = new SourceRegistry(() => SettingsSchema.parse({ sources: { feishu: source('feishu', { cli: 'lark' }), github: source('github', { repository: 'acme/widgets', cli: 'gh' }) }, policy: { sources: { feishu: { allowed: [{ id: 'ou_alice' }] } } } }))
     sources.register(feishuKind); sources.register(githubKind)
     expect(sources.validatePolicy({ feishu: { allowed: [{ id: 'ou_alice', name: 'Alice' }] }, retired: { allowed: [], x: 1 } }))
       .toEqual({ feishu: { allowed: [{ id: 'ou_alice', name: 'Alice' }], syncChat: '', admission: {} }, retired: { allowed: [], x: 1 } })
@@ -135,7 +145,7 @@ describe('Source registry', () => {
     expect(sources.policyPart('probe')).toBeUndefined()
   })
   it('allows a reply only on a Channel whose Source still listens to its chat', () => {
-    const settings = SettingsSchema.parse({ sources: { feishu: { enabled: true, config: { chats: [{ chatId: 'oc_team', listen: 'mentions' }], directMessages: false } } } })
+    const settings = SettingsSchema.parse({ sources: { feishu: source('feishu', { chats: [{ chatId: 'oc_team', listen: 'mentions' }], directMessages: false }), github: source('github', { repository: 'acme/widgets', cli: 'gh' }) } })
     const sources = new SourceRegistry(() => settings)
     expect(sources.channelAllowed({ source: 'feishu', address: { chatId: 'oc_team' } })).toBe(false)
     sources.register(feishuKind); sources.register(githubKind)
@@ -146,14 +156,14 @@ describe('Source registry', () => {
     expect(sources.channelAllowed({ source: 'github', address: { number: '7' } })).toBe(true)
   })
   it('delivers a reply to a direct message under the default settings', async () => {
-    const sources = new SourceRegistry(() => SettingsSchema.parse({}))
+    const sources = new SourceRegistry(() => SettingsSchema.parse({ sources: { feishu: source('feishu', { cli: 'lark' }) } }))
     sources.register(feishuKind)
     const trigger = feishuTrigger({ message_id: 'om_dm', chat_id: 'oc_dm', chat_type: 'p2p', sender_id: 'ou_alice', sender_type: 'user',
       content: 'fix it', create_time: '1757376000000' }, 'ou_bot', 'cli_bot')!
     const channel = trigger.channel!
     expect(channel.address).toEqual({ chatId: 'oc_dm', messageId: 'om_dm', direct: 'true' })
     expect(sources.channelAllowed(channel)).toBe(true)
-    const commands = new Commands(() => testDeployment(), {}, new AbortController().signal)
+    const commands = testCommands(() => testDeployment())
     const run = vi.spyOn(commands, 'run').mockResolvedValue('{"ok":true,"data":{}}')
     const reply: OutboundMessage = { id: 'reply-1', channel, text: 'Done', kind: 'reply' }
     expect(await sources.send(reply, commands)).toBe('sent')

@@ -40,7 +40,23 @@ export class Tickets extends EnginePart {
     // Fall back to the last trigger for Evals recorded before `primary` existed.
     const primary = this.repo.triggers.get(evaluation.primary ?? triggerIds.at(-1)!)
     const origin = { triggerId: primary?.id ?? triggerIds[0]!, triggerIds }
-    let ticket: Ticket = { id, title: outcome.title, decisionId, mandate, channels: [], assignments: [], inputs: [], undelivered: [],
+    // A repository-less Source stays repository-less unless the accept explicitly selected a binding; no "current" repository is guessed.
+    const selected = outcome.repositoryId
+    if (selected !== undefined && this.options.repositoryExists && !this.options.repositoryExists(selected)) {
+      throw new Error(`The selected repository binding does not exist: ${selected}`)
+    }
+    if (primary?.repositoryId != null && selected !== undefined && selected !== primary.repositoryId) {
+      throw new Error('A Ticket cannot be accepted under a repository binding other than its Trigger\'s')
+    }
+    const repositoryId = primary?.repositoryId ?? selected ?? null
+    // Every repository-bound Trigger of one Eval must agree; repository-less Triggers take the binding acceptance chose.
+    for (const triggerId of triggerIds) {
+      const found = this.repo.triggers.get(triggerId)
+      if (found?.repositoryId != null && repositoryId != null && found.repositoryId !== repositoryId) {
+        throw new Error('A Ticket cannot span two repository bindings')
+      }
+    }
+    let ticket: Ticket = { id, title: outcome.title, decisionId, repositoryId, mandate, channels: [], assignments: [], inputs: [], undelivered: [],
       createdAt: at, updatedAt: at, origin }
     for (const triggerId of triggerIds) {
       const channel = this.repo.triggers.get(triggerId)?.channel
@@ -60,12 +76,20 @@ export class Tickets extends EnginePart {
    */
   bind(ticketId: string, thread: ThreadRef, own: boolean): Ticket {
     if (!liveTicket(this.require(ticketId))) throw new UserError('ticketEnded')
-    this.subscribe(ticketId, thread)
+    const ticketBefore = this.require(ticketId)
+    const stored = this.repo.threads.get(threadKey(thread))
+    const boundRepository = thread.repositoryId ?? stored?.repositoryId ?? this.options.threadRepository?.(thread) ?? ticketBefore.repositoryId ?? null
+    if ((ticketBefore.repositoryId ?? null) !== boundRepository) {
+      throw new UserError('crossRepository', { ticket: ticketBefore.repositoryId ?? 'none', thread: boundRepository ?? 'none' })
+    }
+    this.subscribe(ticketId, { ...thread, repositoryId: boundRepository })
     const ticket = this.require(ticketId)
     const followed = threadKey(thread)
     const follow = ticket.follows?.find(item => item.thread === followed)
     // Re-binding a thread reopens it if previously closed; `own` remains true once set.
-    if (follow) { follow.own ||= own; delete follow.closed } else ticket.follows = [...ticket.follows ?? [], { thread: followed, own }]
+    const repository = boundRepository === null ? {} : { repositoryId: boundRepository }
+    if (follow) { follow.own ||= own; delete follow.closed; Object.assign(follow, repository) }
+    else ticket.follows = [...ticket.follows ?? [], { thread: followed, own, ...repository }]
     ticket.updatedAt = this.now()
     this.repo.tickets.save(ticket)
     return ticket
@@ -111,6 +135,7 @@ export class Tickets extends EnginePart {
     const current = this.require(ticketId)
     if (current.ended?.by === 'human') throw new UserError('ticketStopped')
     if (!liveTicket(current) && !this.policy().revalidate(current.mandate)) throw new UserError('mandateRevoked')
+    for (const ref of trigger.threads) this.requireThreadRepository(current, ref)
     return trigger
   }
   /**
@@ -405,13 +430,22 @@ export class Tickets extends EnginePart {
    * @throws UserError when the ticket is unknown or has ended.
    */
   followForContext(ticketId: string, ref: ThreadRef): boolean {
-    if (!liveTicket(this.require(ticketId))) throw new UserError('ticketEnded')
+    const ticket = this.require(ticketId)
+    if (!liveTicket(ticket)) throw new UserError('ticketEnded')
+    this.requireThreadRepository(ticket, ref)
     if (this.thread(ref).subscriptions.includes(ticketId)) return false
     this.subscribe(ticketId, ref)
     const thread = this.thread(ref)
     thread.context = [...thread.context ?? [], ticketId]
     this.repo.threads.save(thread)
     return true
+  }
+  /** Refuse a Thread that belongs to another repository binding, so a worker can never read across repositories. */
+  private requireThreadRepository(ticket: Ticket, ref: ThreadRef): void {
+    const repository = ref.repositoryId ?? this.repo.threads.get(threadKey(ref))?.repositoryId ?? this.options.threadRepository?.(ref) ?? null
+    if (ticket.repositoryId != null && repository != null && repository !== ticket.repositoryId) {
+      throw new UserError('crossRepository', { ticket: ticket.repositoryId, thread: repository })
+    }
   }
   /** Subscribe a ticket to a Thread; later Triggers on it reach the ticket as Inputs, as the ticket's own once it was for context. */
   private subscribe(ticketId: string, ref: ThreadRef): void {

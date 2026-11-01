@@ -8,6 +8,7 @@ import { z } from 'zod'
 import type { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
 import { runAsWorker, sameDirectory, withoutDirectory, workerBin } from './infra/environment.ts'
 import { SetupError } from './setup.ts'
+import { githubCredentialId, repositoryId, type RepositoryBinding } from './repository.ts'
 
 const reason = (error: unknown): string => error instanceof Error ? error.message : String(error)
 const absolute = (description: string) => s.string().pattern(/^\//).description(`${description} Absolute path.`)
@@ -50,9 +51,15 @@ export const FeishuBotSchema = z.object({ cli: z.string().trim().default('') })
 /** Source configuration keys that affect deployment setup and trigger a restart when changed. */
 export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape) }
 
+/** One resolved GitHub CLI identity; `credentialId` of a binding names one of these entries. */
+export interface GithubCredential { cli: string; login: string; noreply: string }
 export interface Deployment extends Machine {
-  repository: string
-  github: { cli: string; login: string; noreply: string }
+  /** The first GitHub account, used by repository-less paths such as the shared worker shim. */
+  github: GithubCredential
+  /** Credentials by binding `credentialId`; a ticket's tool calls resolve their own binding's entry. */
+  credentials: Record<string, GithubCredential>
+  /** Persisted repository bindings resolved and verified at startup. */
+  repositories: RepositoryBinding[]
   feishu?: FeishuBot
 }
 export interface FeishuBot { cli: string; appId: string; brand: 'feishu' | 'lark'; botId: string; name: string }
@@ -76,33 +83,72 @@ export function workerProbe(subprocess: SubprocessRuntime, stateDir: string, cwd
 }
 
 const GithubUser = z.object({ login: z.string().regex(/^[A-Za-z0-9-]+$/), id: z.number().int().positive() })
-const RepositoryAccess = z.object({ name: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/), push: z.boolean().nullable() })
+const RepositoryAccess = z.object({
+  id: z.union([z.number().int().positive(), z.string().regex(/^[0-9]+$/)]),
+  name: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
+  url: z.string().url(),
+  push: z.boolean().nullable(),
+})
 function parsed<T>(schema: z.ZodType<T>, text: string): T | undefined {
   let value: unknown
   try { value = JSON.parse(text) } catch { return undefined /* Non-JSON output; the caller surfaces the setup failure. */ }
   const result = schema.safeParse(value)
   return result.success ? result.data : undefined
 }
-/** Verify the agent's GitHub CLI identity and push access to the configured repository. */
-export async function resolveDeployment(machine: Machine, github: unknown, probe: Probe, path = process.env.PATH ?? ''): Promise<Deployment> {
+/** A repository-bound Source instance's config as setup reads it; `kind` defaults to the instance ID. */
+export interface GithubSourceInput { sourceId: string; kind?: string; enabled: boolean; config: unknown; repositoryId?: string | null }
+/**
+ * Resolve the agent's GitHub identity and every configured GitHub repository from the provider. Each enabled instance
+ * resolves exactly one RepositoryBinding whose stable ID is GitHub's immutable numeric repository ID; a slug is only a
+ * display name and the input used to find the repository. Re-resolving keeps the binding ID across slug changes.
+ */
+export async function resolveDeployment(machine: Machine, sources: readonly GithubSourceInput[], probe: Probe, path = process.env.PATH ?? ''): Promise<Deployment> {
   const { stateDir } = machine
-  const accounts = GithubAccountsSchema.parse(github ?? {})
-  const remote = accounts.repository
-  if (!remote) throw new SetupError('repositoryUnset')
-  if (!accounts.cli) throw new SetupError('agentCliUnset')
-  let cli: string
-  try { cli = executable(accounts.cli, path, workerBin(stateDir)) } catch (error) { throw new SetupError('agentCliMissing', { output: reason(error) }) }
-  const text = await probe([cli, 'api', 'user']).catch((error: unknown) => { throw new SetupError('agentCliSignedOut', { output: reason(error) }) })
-  const agent = parsed(GithubUser, text)
-  if (!agent) throw new SetupError('agentCliNoAccount')
-  // Use the canonical repository name returned by GitHub so renamed repositories match incoming notifications.
-  const access = parsed(RepositoryAccess, await probe([cli, 'api', `repos/${remote}`, '--jq', '{name: .full_name, push: .permissions.push}']).catch((error: unknown) => {
-    throw new SetupError('repositoryUnreadable', { account: agent.login, repository: remote, output: reason(error) })
-  }))
-  if (!access) throw new SetupError('repositoryUnreported', { repository: remote })
-  const repository = access.name
-  if (access.push !== true) throw new SetupError('repositoryReadOnly', { account: agent.login, repository })
-  return { ...machine, repository, github: { cli, login: agent.login, noreply: `${agent.id}+${agent.login}@users.noreply.github.com` } }
+  const configured = sources.filter(source => (source.kind ?? source.sourceId) === 'github')
+  const inputs = configured.map(source => ({ ...source, accounts: GithubAccountsSchema.parse(source.config ?? {}) }))
+  const usable = inputs.filter(item => item.accounts.repository || item.accounts.cli)
+  if (!usable.length) throw new SetupError('repositoryUnset')
+  const credentials: Record<string, GithubCredential> = {}
+  const accounts = new Map<string, GithubCredential>()
+  for (const item of usable) {
+    const { cli: name } = item.accounts
+    if (!item.accounts.repository && item.enabled) throw new SetupError('repositoryUnset')
+    if (!name) { if (item.enabled) throw new SetupError('agentCliUnset'); continue }
+    if (accounts.has(name)) continue
+    let cli: string
+    try { cli = executable(name, path, workerBin(stateDir)) } catch (error) { throw new SetupError('agentCliMissing', { output: reason(error) }) }
+    const text = await probe([cli, 'api', 'user']).catch((error: unknown) => { throw new SetupError('agentCliSignedOut', { output: reason(error) }) })
+    const agent = parsed(GithubUser, text)
+    if (!agent) throw new SetupError('agentCliNoAccount')
+    accounts.set(name, { cli, login: agent.login, noreply: `${agent.id}+${agent.login}@users.noreply.github.com` })
+  }
+  const primary = [...accounts.values()][0]
+  if (!primary) throw new SetupError('agentCliUnset')
+  const repositories: RepositoryBinding[] = []
+  const owners = new Map<string, string[]>()
+  for (const item of usable) {
+    if (!item.accounts.repository || !item.accounts.cli) {
+      if (item.enabled) throw new SetupError('repositoryUnset')
+      continue
+    }
+    const account = accounts.get(item.accounts.cli)!
+    const remote = item.accounts.repository
+    const access = parsed(RepositoryAccess, await probe([account.cli, 'api', `repos/${remote}`,
+      '--jq', '{id, name: .full_name, url: .html_url, push: .permissions.push}']).catch((error: unknown) => {
+      throw new SetupError('repositoryUnreadable', { account: account.login, repository: remote, output: reason(error) })
+    }))
+    if (!access) throw new SetupError('repositoryUnreported', { repository: remote })
+    if (access.push !== true) throw new SetupError('repositoryReadOnly', { account: account.login, repository: access.name })
+    const id = repositoryId('github', access.id)
+    const owner = owners.get(id) ?? []
+    if (owner.length) throw new SetupError('repositoryDuplicate', { repository: access.name, sources: [...owner, item.sourceId].join(', ') })
+    owners.set(id, [item.sourceId])
+    const credentialId = githubCredentialId(item.sourceId)
+    credentials[credentialId] = account
+    repositories.push({ id, provider: 'github', providerRepositoryId: String(access.id), slug: access.name,
+      webUrl: access.url, credentialId, enabled: item.enabled })
+  }
+  return { ...machine, github: primary, credentials, repositories }
 }
 
 const AuthStatus = z.object({ appId: z.string().regex(/^cli_[A-Za-z0-9]+$/), brand: z.enum(['feishu', 'lark']).default('feishu'), identities: z.object({ bot: z.object({ status: z.string() }) }) })

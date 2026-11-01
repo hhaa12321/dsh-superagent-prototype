@@ -1,5 +1,6 @@
 /**
  * Process environment and CLI shims that bind git, gh, and lark-cli to the deployment's accounts and block disallowed commands.
+ * Repository identity and credentials are resolved per RepositoryBinding by `Commands`; the shim only selects the account.
  * Variables read by workers avoid `KEY|PASSWORD|SECRET|TOKEN` in their names because DSH strips credential-shaped variables from child environments.
  * Provides default-path guardrails rather than an OS-level security boundary, as workers run under the operator's OS user.
  */
@@ -18,9 +19,11 @@ const LEGACY_MARKERS = ['dsh-tag', 'dsh-go', 'dsh-freelancer'].map(name => `# Wr
 export const WORKER_COMMANDS: readonly string[] = ['gh', 'git', 'lark-cli']
 export const workerBin = (stateDir: string): string => join(stateDir, 'worker-bin')
 export const workerGitConfig = (stateDir: string): string => join(stateDir, 'worker-gitconfig')
+export const workerCredentialHelper = (stateDir: string): string => join(stateDir, 'worker-credential-helper')
 const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`
 const gitQuote = (value: string): string => `"${value.replace(/[\\"]/g, char => `\\${char}`)}"`
-export const credentialHelper = (cli: string): string => `!${shellQuote(cli)} auth git-credential`
+/** Git's credential helper command: a wrapper that admits only the ticket's repository; see `writeEnvironment`. */
+export const credentialHelper = (stateDir: string): string => `!${shellQuote(workerCredentialHelper(stateDir))}`
 
 export function sameDirectory(a: string, b: string): boolean {
   const real = (path: string): string => { try { return realpathSync(path) } catch { return resolve(path) } }
@@ -72,12 +75,48 @@ async function own(file: string, text: string, mode = 0o644): Promise<void> {
   await rename(temporary, file)
 }
 
+/** The shell fragment that keeps a ticket's shared `gh` CLI from addressing another repository. */
+function bindingGuard(cli: string): string {
+  return [
+    `real=${shellQuote(cli)}`,
+    '  allowed=${DSH_SUPERAGENT_GITHUB_REPOSITORY:-}',
+    '  if [ -z "$allowed" ]; then echo "dsh-superagent: no repository binding is active for this shell; GitHub commands are unavailable" >&2; exit 1; fi',
+    '  export GH_REPO="$allowed"',
+    '  # `gh api` is the easiest way around the flags below: admit only this repository and the account endpoints the prompts use.',
+    '  if [ "$1" = api ]; then',
+    '    endpoint=; found=0',
+    '    for arg in "$@"; do',
+    '      if [ "$found" = 1 ]; then case "$arg" in -*) ;; *) endpoint=$arg; break ;; esac; continue; fi',
+    '      [ "$arg" = api ] && found=1',
+    '    done',
+    '    endpoint=${endpoint#/}',
+    '    case "$endpoint" in',
+    '      repos/"$allowed"|repos/"$allowed"/*|user|users/*) ;;',
+    '      *) echo "dsh-superagent: gh api may only read this ticket\'s repository $allowed or the account" >&2; exit 1 ;;',
+    '    esac',
+    '  fi',
+    '  bad=0; want=0',
+    '  for arg in "$@"; do',
+    '    if [ "$want" = 1 ]; then want=0; case "$arg" in "$allowed"|"$allowed"/*) ;; *) bad=1 ;; esac; continue; fi',
+    '    case "$arg" in',
+    '      -R|--repo) want=1 ;;',
+    '      --repo=*) want=0; rest=${arg#--repo=}; case "$rest" in "$allowed"|"$allowed"/*) ;; *) bad=1 ;; esac ;;',
+    '      repos/*) rest=${arg#repos/}; owner=${rest%%/*}; rest=${rest#*/}; name=${rest%%/*}; case "$owner/$name" in "$allowed") ;; *) bad=1 ;; esac ;;',
+    '      https://github.com/*) rest=${arg#https://github.com/}; owner=${rest%%/*}; rest=${rest#*/}; name=${rest%%/*}; name=${name%.git}; case "$owner/$name" in "$allowed") ;; *) bad=1 ;; esac ;;',
+    '      git@github.com:*) rest=${arg#git@github.com:}; owner=${rest%%/*}; rest=${rest#*/}; name=${rest%%/*}; name=${name%.git}; case "$owner/$name" in "$allowed") ;; *) bad=1 ;; esac ;;',
+    '    esac',
+    '  done',
+    '  if [ "$bad" = 1 ] || [ "$want" = 1 ]; then echo "dsh-superagent: this worker is bound to $allowed, not another repository" >&2; exit 1; fi',
+    'exec "$real" "$@"',
+  ].join('\n')
+}
+
 /**
  * Atomically writes worker CLI shims and the isolated git configuration file into the state directory, refusing to overwrite foreign files.
  * Each shim strips the shim directory from PATH before exec so wrapper scripts resolving `gh` or `lark-cli` by name reach the real binary.
  */
-export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' | 'repository' | 'github' | 'feishu'>, blockedCommands: readonly string[]): Promise<void> {
-  const { stateDir, repository, github, feishu } = deployment
+export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' | 'github' | 'feishu'>, blockedCommands: readonly string[]): Promise<void> {
+  const { stateDir, github, feishu } = deployment
   const dir = workerBin(stateDir)
   await mkdir(dir, { recursive: true })
   const before = await readdir(dir)
@@ -97,19 +136,42 @@ export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' |
   ].join('\n')
   const run = (program: string): string => `${withoutShims}\nexec ${shellQuote(program)} "$@"`
   const fail = (message: string): string => `echo ${shellQuote(message)} >&2\nexit 1`
-  await shim('gh', run(github.cli))
-  await shim('lark-cli', feishu ? run(feishu.cli) : fail('lark-cli is unavailable: this installation has no Feishu bot.'))
+  // A worker's shell receives the ticket's binding as DSH_SUPERAGENT_GITHUB_REPOSITORY (src/app/shell-environment.ts).
+  // The shim constrains repository selection to it, so the one shared account cannot be pointed at another repository.
+  await shim('gh', `${withoutShims}
+${bindingGuard(github.cli)}`)
   for (const name of new Set(blockedCommands.filter(name => !WORKER_COMMANDS.includes(name)))) {
     await shim(name, fail(`${name} is blocked in this installation; use gh, which acts as ${github.login}.`))
   }
+  await shim('lark-cli', feishu ? run(feishu.cli) : fail('lark-cli is unavailable: this installation has no Feishu bot.'))
   for (const name of before) if (!kept.has(name)) await unlink(join(dir, name))
+  // The credential helper admits only the ticket's repository: git asks per path (useHttpPath) and the shell
+  // environment supplies the ticket binding for each worker command.
+  await own(workerCredentialHelper(stateDir), [
+    '#!/bin/sh',
+    MARKER,
+    "real=" + shellQuote(github.cli),
+    'if [ -z "${DSH_SUPERAGENT_GITHUB_REPOSITORY:-}" ]; then',
+    '  echo "dsh-superagent: no repository binding is active for this shell; GitHub credentials are unavailable" >&2',
+    '  exit 1',
+    'fi',
+    'input=$(cat)',
+    "  repo=$(printf '%s\\n' \"$input\" | sed -n 's|^url=https://[^/]*/||p;s|^path=||p' | head -n 1)",
+    '  repo=${repo%.git}',
+    '  case "$repo" in',
+    '    "${DSH_SUPERAGENT_GITHUB_REPOSITORY}"|"${DSH_SUPERAGENT_GITHUB_REPOSITORY}/"*) ;;',
+    '    *) echo "dsh-superagent: credentials for $repo are outside this ticket\'s repository ${DSH_SUPERAGENT_GITHUB_REPOSITORY}" >&2; exit 1 ;;',
+    '  esac',
+    "  printf '%s\\n' \"$input\" | \"$real\" auth git-credential \"$@\"",
+  ].join('\n') + '\n', 0o755)
   await own(workerGitConfig(stateDir), [
     MARKER,
     // Make git refuse to commit without an explicit identity set by the worker instead of guessing from the operator's OS user.
     '[user]', '\tuseConfigOnly = true',
-    '[credential]', '\thelper =',
-    '[credential "https://github.com"]', `\thelper = ${gitQuote(credentialHelper(github.cli))}`,
-    '[url "https://github.com/"]', '\tinsteadOf = git@github.com:', '\tinsteadOf = ssh://git@github.com/',
+    // A credential is resolved for a concrete repository path, never the host alone, so the helper can enforce the binding.
+    '[credential]', '\thelper =', '\tuseHttpPath = true',
+    '[credential "https://github.com"]', `\thelper = ${gitQuote(credentialHelper(stateDir))}`,
+    '[url "https://github.com/"]', '\tinsteadOf = git@github.com:', '\tinsteadOf = ssh://git@github.com:',
     // Include Git LFS filters because the operator's global gitconfig (which usually holds them) is ignored.
     '[filter "lfs"]', '\tclean = git-lfs clean -- %f', '\tsmudge = git-lfs smudge -- %f', '\tprocess = git-lfs filter-process', '\trequired = true',
   ].join('\n') + '\n')
@@ -139,7 +201,7 @@ export async function verifyEnvironment(deployment: Pick<Deployment, 'github' | 
   const { github, stateDir } = deployment
   // `-z` separates fields with NUL and never quotes paths.
   const helpers = (await runAsWorker(subprocess, ['git', 'config', '-z', '--show-origin', '--get-all', 'credential.https://github.com.helper'], stateDir, AbortSignal.any([signal, AbortSignal.timeout(60_000)])).catch(() => '')).split('\0')
-  if (helpers.join('\0') !== [`file:${workerGitConfig(stateDir)}`, credentialHelper(github.cli), ''].join('\0')) throw new SetupError('gitTooOld')
+  if (helpers.join('\0') !== [`file:${workerGitConfig(stateDir)}`, credentialHelper(stateDir), ''].join('\0')) throw new SetupError('gitTooOld')
 }
 
 /**

@@ -13,6 +13,10 @@ export interface EngineOptions {
   executor: Executor
   outbox: Outbox
   prepareTicket?: (ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>) => Ticket
+  /** Whether a RepositoryBinding exists; acceptance refuses an explicit binding that does not. */
+  repositoryExists?(repositoryId: string): boolean
+  /** The repository binding a Thread reference belongs to, resolved by its Source instance when the Thread is not stored yet. */
+  threadRepository?(ref: ThreadRef): string | null
   now?: () => string
   emit?: (event: DomainEvent) => void
 }
@@ -65,10 +69,11 @@ export abstract class EnginePart {
     this.options.emit?.({ type, at: this.now(), data } as DomainEvent)
   }
   protected require(ticketId: string): Ticket { const ticket = this.repo.tickets.get(ticketId); if (!ticket) throw new UserError('unknownTicket'); return ticket }
-  /** Returns the stored Thread or an unsaved empty Thread aggregate. */
+  /** Returns the stored Thread or an unsaved empty Thread aggregate; a new Thread inherits the reference's repository binding. */
   protected thread(ref: ThreadRef): Thread {
     const k = threadKey(ref)
-    return this.repo.threads.get(k) ?? { key: k, ref: { source: ref.source, id: ref.id }, createdAt: this.now(), subscriptions: [], correlated: [], pending: [], meta: {} }
+    return this.repo.threads.get(k) ?? { key: k, ref: { source: ref.source, id: ref.id, repositoryId: ref.repositoryId ?? null },
+      repositoryId: ref.repositoryId ?? null, createdAt: this.now(), subscriptions: [], correlated: [], pending: [], meta: {} }
   }
   protected ticketsOnThread(thread: Thread): Ticket[] {
     return thread.subscriptions.flatMap(id => { const ticket = this.repo.tickets.get(id); return ticket ? [ticket] : [] })

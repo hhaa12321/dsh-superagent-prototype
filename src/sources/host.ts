@@ -2,6 +2,7 @@
 import type { ChannelRef, ReceiveResult, OutboundMessage, Thread, ThreadFact, ThreadRef, Ticket, Trigger } from '../core/index.ts'
 import type { Commands } from '../infra/commands.ts'
 import type { Deployment } from '../deployment.ts'
+import type { RepositoryBinding } from '../repository.ts'
 import type { SourceRegistry } from './registry.ts'
 import type { SetupProblem } from '../setup.ts'
 import type { Family, Key } from '../kv.ts'
@@ -21,14 +22,22 @@ export function health(state: Health['state'], code: HealthCode, values: Record<
   return { state, detail: fill(HEALTH_TEXT[code], values), code, ...Object.keys(values).length ? { values } : {} }
 }
 export interface SourceHost {
+  /** Resolves once startup finishes or setup determines what is still missing. */
+  readonly ready: Promise<void>
   readonly sources: SourceRegistry
-  /** Returns the context for one Source kind; its `report` writes only the health entries declared by the kind. */
-  context(kind: { kind: string; health: readonly string[] }): SourceContext
+  /** Returns the context of one configured Source instance; its `report` writes only the health entries declared by the kind. */
+  context(kind: { kind: string; health: readonly string[] }, sourceId: string): SourceContext
+  /** The context of the source instance bound to `repositoryId`; throws when no installed instance owns it. */
+  contextForRepository(repositoryId: string): SourceContext
 }
 /** Display label, URL, and facts (`null` removes a fact) that a Source publishes on a Thread. */
 export interface ThreadDescription { label?: string; url?: string; facts?: Record<string, ThreadFact | null> }
 /** Application capabilities exposed to a Source kind for reading state, ingesting triggers, managing threads/tickets, and reporting health. */
 export interface SourceContext {
+  /** Stable ID of this Source instance, used in domain references and keys instead of the kind. */
+  readonly sourceId: string
+  /** The one persisted RepositoryBinding of a repository-bound instance; undefined for a repository-less Source. */
+  readonly repository: RepositoryBinding | undefined
   readonly deployment: Deployment
   readonly commands: Commands
   readonly ready: Promise<void>
@@ -36,8 +45,8 @@ export interface SourceContext {
   configured(): boolean
   /** Setup problem keeping this Source's account from running; only the Feishu bot check reports one. */
   readonly problem?: SetupProblem | undefined
-  /** Returns a Source's configuration while enabled, or undefined while disabled or uninstalled. */
-  config<C extends Record<string, unknown>>(kind: string): C | undefined
+  /** Returns this instance's configuration while enabled, or undefined while disabled or uninstalled. */
+  config<C extends Record<string, unknown>>(): C | undefined
   /** Ingests a trigger into the Engine and schedules the next evaluation pass; callers should await completion before advancing read cursors. */
   receive(trigger: Trigger): ReceiveResult | Promise<ReceiveResult>
   atomic<T>(work: () => T): T
@@ -64,4 +73,4 @@ export interface SourceContext {
   /** Reports the state of one of this kind's declared health entries; throws for undeclared entry names. */
   report(entry: string, health: Health): void
 }
-export const sourceContext = (host: SourceHost, kind: { kind: string; health: readonly string[] }): SourceContext => host.context(kind)
+export const sourceContext = (host: SourceHost, kind: { kind: string; health: readonly string[] }, sourceId: string): SourceContext => host.context(kind, sourceId)

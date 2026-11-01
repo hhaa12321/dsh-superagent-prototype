@@ -174,7 +174,7 @@ it('shows a failed Feishu bot check as a problem of the Feishu Source only, with
 
 it('leaves Feishu out of a GitHub-only deployment', async () => {
   server.setup = { ...server.setup, accounts: { ...server.setup.accounts!, feishu: null } }
-  server.settings = { ...server.settings, sources: { ...server.settings.sources, feishu: { enabled: false, config: {} } } }
+  server.settings = { ...server.settings, sources: { ...server.settings.sources, feishu: { kind: 'feishu', enabled: false, config: {} } } }
   at({ page: 'settings', query: { group: 'prompts' } })
   await mount()
   await click(tab(zh.promptViewFull))

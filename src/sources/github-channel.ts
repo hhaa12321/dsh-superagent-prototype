@@ -17,7 +17,10 @@ const missing = (error: unknown): boolean => error instanceof CliError && (error
 /** Posts a comment or review-thread reply with an embedded HTML marker so retries do not create duplicate comments. */
 export async function sendGithub(host: Pick<SourceContext, 'commands'>, message: OutboundMessage): Promise<'sent' | 'gone'> {
   const { commands } = host
-  const { repository, github } = commands.deployment
+  const binding = commands.repository
+  if (!binding) throw new Error(`GitHub channel ${message.channel.thread} has no repository binding`)
+  const credential = commands.deployment.credentials[binding.credentialId] ?? commands.deployment.github
+  const repository = binding.slug
   const number = Number(message.channel.address.number)
   if (!number) throw new Error('Missing GitHub reply target')
   try {
@@ -32,7 +35,7 @@ export async function sendGithub(host: Pick<SourceContext, 'commands'>, message:
     }
     const path = rootId === undefined ? `issues/${number}/comments` : `pulls/${number}/comments`
     const marker = `<!-- dsh-superagent:${message.id} -->`
-    const mine = (comment: z.infer<typeof CommentSchema>) => sameName(comment.user?.login ?? '', github.login)
+    const mine = (comment: z.infer<typeof CommentSchema>) => sameName(comment.user?.login ?? '', credential.login)
       && (rootId === undefined || comment.in_reply_to_id === rootId) && (comment.body ?? '').includes(marker)
     if ((await commands.pages(CommentSchema, path)).some(mine)) return 'sent'
     const target = rootId === undefined ? path : `${path}/${rootId}/replies`

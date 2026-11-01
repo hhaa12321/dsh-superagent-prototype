@@ -30,7 +30,7 @@ const FeishuConfigSchema = FeishuBotSchema.extend({
 export type FeishuConfig = z.infer<typeof FeishuConfigSchema>
 export const feishuKind: SourceKind<FeishuConfig> = {
   kind: SOURCE,
-  refreshLabels: (host, signal) => refreshChatNames(sourceContext(host, feishuKind), signal),
+  refreshLabels: (host, sourceId, signal) => refreshChatNames(sourceContext(host, feishuKind, sourceId), signal),
   title: { zh: '飞书', en: 'Feishu' },
   description: { zh: '接收下列群和私聊中发给机器人的消息，补收群历史并轮询订阅的线程。', en: 'Receives messages to the bot in these chats and direct messages, recovers chat history and polls subscribed Threads.' },
   schema: FeishuConfigSchema,
@@ -102,8 +102,8 @@ export const feishuKind: SourceKind<FeishuConfig> = {
     sync: {
       label: { zh: '立即同步', en: 'Sync now' },
       ready: part => !!part.syncChat,
-      async run(host, part, signal) {
-        const commands = sourceContext(host, feishuKind).commands.withSignal(signal)
+      async run(host, sourceId, part, signal) {
+        const commands = sourceContext(host, feishuKind, sourceId).commands.withSignal(signal)
         const chat = String(part.syncChat)
         const members = ['im', '+chat-members-list', '--chat-id', chat, '--member-types', 'user', '--page-all', '--page-limit', '0']
         const result = MembersSchema.parse(await commands.lark(members))
@@ -133,7 +133,10 @@ export function apply(ctx: Context): void {
   ctx.effect(() => ctx.orchestrator.sources.register(feishuKind), 'feishu: source kind')
   ctx.effect(() => {
     const controller = new AbortController()
-    const running = runFeishu(sourceContext(ctx.orchestrator, feishuKind), controller.signal)
+    const running = ctx.orchestrator.ready.then(async () => {
+      const instances = ctx.orchestrator.sources.instancesOfKind(feishuKind.kind)
+      await Promise.all(instances.map(instance => runFeishu(sourceContext(ctx.orchestrator, feishuKind, instance.id), controller.signal)))
+    })
     return async () => { controller.abort(); await running }
   })
 }

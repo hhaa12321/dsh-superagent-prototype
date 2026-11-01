@@ -3,10 +3,10 @@ import type { Reason } from './reasons.ts'
 
 /** Actor identity in the source's own vocabulary; Policy decides which actors may originate work on that Source. */
 export interface ActorRef { source: string; id: string }
-/** Thread identity; the rule that derives `id` from a native event belongs to the source. */
-export interface ThreadRef { source: string; id: string }
-/** Write-only address on a thread; the address format belongs to the source. */
-export interface ChannelRef { source: string; thread: string; address: Record<string, string> }
+/** Thread identity; `source` is the Source instance ID, not the kind, and the rule that derives `id` belongs to the source. */
+export interface ThreadRef { source: string; id: string; /** The thread's repository binding, or null for a repository-less Source. */ repositoryId?: string | null }
+/** Write-only address on a thread; the address format belongs to the source, and `source` is the Source instance ID. */
+export interface ChannelRef { source: string; thread: string; address: Record<string, string>; /** The thread's repository binding, or null. */ repositoryId?: string | null }
 
 /** Stable key of a thread across the whole domain. */
 export const threadKey = (ref: ThreadRef): string => `${ref.source}:${ref.id}`
@@ -22,7 +22,10 @@ export function isoTime(value: string): string {
 /** One immutable event produced by a source. `text` and `meta` are untrusted external data. */
 export interface Trigger {
   id: string
+  /** Source instance ID; identical native events in two instances never share a Trigger ID. */
   source: string
+  /** The repository binding this event belongs to; null or absent for a repository-less Source. */
+  repositoryId?: string | null
   /** Every thread the trigger belongs to; the first (`threads[0]`) is the primary thread that hosts its evaluation. */
   threads: ThreadRef[]
   actor: ActorRef
@@ -157,6 +160,8 @@ export interface Evaluation {
 export interface Thread {
   key: string
   ref: ThreadRef
+  /** The repository binding this thread belongs to; null or absent for a repository-less Source. */
+  repositoryId?: string | null
   createdAt: string
   /** Time of the newest trigger on the thread. */
   lastAt?: string
@@ -278,6 +283,8 @@ export interface Ticket {
   id: string
   title: string
   decisionId: string
+  /** The repository binding accepted with this ticket; every PR, workspace, credential, and tool call resolves through it. */
+  repositoryId?: string | null
   mandate: Mandate
   /** The Channels of the messages it was accepted from, which its replies go to. */
   channels: ChannelRef[]
@@ -311,7 +318,8 @@ export interface Ticket {
  * closed. `followsDone` holds once no Thread of its own is open, or, when the ticket has no `own` Thread, once every followed
  * Thread closed; the ticket then ends unless its work has not finished (see `Tickets.unfinished`).
  */
-export interface Follow { thread: string; own: boolean; closed?: { at: string; outcome: 'merged' | 'closed' } }
+export interface Follow { thread: string; own: boolean; /** The followed thread's repository binding, or null. */ repositoryId?: string | null
+  closed?: { at: string; outcome: 'merged' | 'closed' } }
 export interface Execution { name: string; directory: string; assignment: string }
 
 /** Whether a ticket is open: it has not ended. */

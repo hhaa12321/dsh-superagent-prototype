@@ -61,7 +61,7 @@ export function snapshot(host: ViewHost): Snapshot {
     if (!id) return { source, id }
     const entry = allowedSender(settings, { source, id }) ?? listedBot(settings, { source, id })
     if (entry) return { source, id, name: named(entry.name || entry.id) }
-    const unnamed = sources.kind(source)?.policy?.unnamed
+    const unnamed = sources.kindOf(source)?.policy?.unnamed
     return { source, id, name: unnamed ? human === false ? unnamed.bot : unnamed.person : named(id) }
   }
   return { ...host, threadsOf, rule: id => ({ id, name: rules.get(id) ?? id }), actor, owners: ownersOf(store) }

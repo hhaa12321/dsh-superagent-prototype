@@ -6,6 +6,7 @@ import { KV } from '../src/kv.ts'
 import { apply as applyFeishu, pollThreads as pollFeishuThreads } from '../src/sources/feishu.ts'
 import { runFeishu } from '../src/sources/feishu-loops.ts'
 import { commentTrigger, githubAddress, githubChannel, issueTrigger, type GithubComment, type GithubIssue } from '../src/sources/github-trigger.ts'
+import { testRepository } from './fixtures/deployment.ts'
 import { claimPull, observePull, pullEndNotices, pullOf, ticketBranch, type Pull } from '../src/sources/github-pull.ts'
 import { ciCounts, ciFact, ciSummary } from '../src/sources/github-read.ts'
 import { apply as applyGithub, githubKind, pollFailure, pollRound } from '../src/sources/github.ts'
@@ -15,7 +16,7 @@ import { cursorAt, POLL_HORIZON_MS } from '../src/sources/poll.ts'
 import { Store } from '../src/app/store.ts'
 import { Commands, commandError } from '../src/infra/commands.ts'
 import { HealthBoard } from '../src/infra/health.ts'
-import { testDeployment } from './fixtures/deployment.ts'
+import {  testDeployment, testCommands, githubRef } from './fixtures/deployment.ts'
 import { SettingsSchema, settingsPolicy } from '../src/policy.ts'
 import { sourceContextOf, type SourceContextDeps } from '../src/app/source-context.ts'
 import { SetupError, type SetupProblem } from '../src/setup.ts'
@@ -23,44 +24,50 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+const REPO = testRepository.id
+const kv = { since: KV.github.since('github', REPO), retry: KV.github.retries('github', REPO), cursor: (number: number) => KV.github.cursor('github', REPO, number),
+  stream: (stream: string) => KV.github.stream('github', REPO, stream), branchCi: KV.github.branchCi('github', REPO),
+  ci: (number: number) => KV.github.ci('github', REPO, number) }
 const MEMBER = 'ou_alice'
 function host(overrides: Partial<SourceContextDeps> = {}) {
   const store = new Store(join(mkdtempSync(join(tmpdir(), 'sources-')), 'db.sqlite'))
-  const settings = SettingsSchema.parse({ policy: { sources: { feishu: { allowed: [{ id: 'ou_alice', name: 'Alice' }], syncChat: 'oc_team' }, github: { allowed: [{ id: 'alice' }] } } }, eval: { mode: 'auto' }, sources: { feishu: { enabled: true, config: { chats: [{ chatId: 'oc_team', listen: 'mentions' }, { chatId: 'oc_observed', listen: 'all' }], directMessages: true } } } })
+  const settings = SettingsSchema.parse({ policy: { sources: { feishu: { allowed: [{ id: 'ou_alice', name: 'Alice' }], syncChat: 'oc_team' }, github: { allowed: [{ id: 'alice' }] } } }, eval: { mode: 'auto' }, sources: { github: { kind: 'github', enabled: true, config: {} }, feishu: { kind: 'feishu', enabled: true, config: { chats: [{ chatId: 'oc_team', listen: 'mentions' }, { chatId: 'oc_observed', listen: 'all' }], directMessages: true } } } })
   store.saveSettings(settings)
   const board = new HealthBoard()
-  const sources = new SourceRegistry(() => store.settings(), board)
+  const sources = new SourceRegistry(() => store.settings(), board, undefined, sourceId => sourceId === 'github' ? testRepository : undefined)
   const deployment = testDeployment()
   sources.register(feishuKind); sources.register(githubKind)
   const assessor: Assessor = { request: vi.fn(async () => {}) }
   const executor: Executor = { start: vi.fn(async () => {}), deliver: vi.fn(async () => {}), stop: vi.fn(async () => {}) }
   const outbox = { send: () => {}, status: () => undefined, withdraw: () => {} }
   const engine = new Engine({ repo: store, scope: sources, policy: () => settingsPolicy(store.settings(), sources), assessor, executor, outbox })
-  const commands = new Commands(() => deployment, {}, new AbortController().signal)
+  const commands = testCommands(() => deployment)
   const receive = vi.fn(async (trigger: Trigger) => { const result = engine.receive(trigger); engine.evaluateDue(); return result })
   // Record outbound messages in the store without sending them.
   const parts: SourceContextDeps = { store, engine, outbox: { send: message => { store.receipts.add(message) } }, commands, sources, deployment,
     ready: Promise.resolve(), configured: () => true, receive, ...overrides }
   // The Sources' functions take the context; plugin entries and kind callbacks take the host, which builds each kind's context.
-  const value = { ...parts, context: (kind: { kind: string; health: readonly string[] }) => sourceContextOf(parts, kind) }
-  const context = sourceContextOf(parts, { kind: 'feishu', health: ['github', 'feishu', 'history'] })
+  const value = { ...parts, context: (kind: { kind: string; health: readonly string[] }, sourceId = kind.kind) => sourceContextOf(parts, kind, sourceId),
+    contextForRepository: (repositoryId: string) => { throw new Error(`No Source instance is bound to ${repositoryId}`) } }
+  const context = sourceContextOf(parts, { kind: 'feishu', health: ['github', 'feishu', 'history'] }, 'feishu')
+  const githubContext = sourceContextOf(parts, githubKind, 'github')
   const health = overrides.sources ? healthOf.get(overrides.sources)!.all : board.all
-  return { ...value, ...context, health, store, engine, commands: parts.commands, receive, executor }
+  return { ...value, ...context, health, store, engine, commands: parts.commands, receive, executor, github: githubContext }
 }
 const healthOf = new WeakMap<SourceRegistry, HealthBoard>()
 function emptyRegistry(): SourceRegistry {
   const board = new HealthBoard()
-  const sources = new SourceRegistry(() => SettingsSchema.parse({}), board)
+  const sources = new SourceRegistry(() => SettingsSchema.parse({ sources: { github: { kind: 'github', enabled: true, config: {} }, feishu: { kind: 'feishu', enabled: true, config: {} } } }), board, undefined, sourceId => sourceId === 'github' ? testRepository : undefined)
   healthOf.set(sources, board)
   return sources
 }
 const subscribed = (h: ReturnType<typeof host>, ref: { source: string; id: string }, meta: Record<string, unknown> = {}) =>
   h.store.threads.save({ key: `${ref.source}:${ref.id}`, ref, createdAt: new Date().toISOString(), subscriptions: ['ticket'], correlated: [], pending: [], meta })
-const openTicket = (id: string): Ticket => ({ id, title: id, decisionId: `d-${id}`, mandate: { strength: 'explicit', policyVersion: '',
+const openTicket = (id: string): Ticket => ({ id, title: id, decisionId: `d-${id}`, repositoryId: REPO, mandate: { strength: 'explicit', policyVersion: '',
   basis: { via: 'listed' }, actor: { source: 'github', id: 'alice' }, scope: '' },
   channels: [], assignments: [], inputs: [], undelivered: [], createdAt: '', updatedAt: '', origin: { triggerId: `source-${id}`, triggerIds: [] } })
 const execution = (name: string) => ({ name, directory: `/w/${name}`, assignment: '' })
-const pulled = (number: number) => ({ follows: [{ thread: `github:${number}`, own: true }] })
+const pulled = (number: number) => ({ follows: [{ thread: `github:${number}`, own: true, repositoryId: REPO }] })
 const endedPull = (number: number, at: string, merged = true): Pull =>
   ({ ...openPull(number), state: 'closed', merged, ...merged ? { merged_at: at } : { closed_at: at } })
 const agentsPull = (number: number, ref: string): Pull =>
@@ -96,7 +103,8 @@ describe('feishu source', () => {
       const value = host({ sources: emptyRegistry(), ...overrides })
       const disposers: (() => unknown)[] = []
       applyFeishu({ orchestrator: value, effect: (effect: () => () => unknown) => { disposers.push(effect()) } } as never)
-      await vi.waitFor(() => expect(value.health.history).toBeDefined())
+      await vi.waitFor(() => expect(value.health['history:feishu']?.state).not.toBe('starting'))
+      await vi.waitFor(() => expect(value.health['feishu:feishu']?.state).not.toBe('starting'))
       const registered = value.sources.kind('feishu')
       // Snapshot health before disposal clears the registered entries.
       const health = { ...value.health }
@@ -105,12 +113,12 @@ describe('feishu source', () => {
     }
     const unset = await run({ deployment: testDeployment({ feishu: undefined }) })
     expect(unset.registered).toBe(feishuKind)
-    expect(unset.health).toMatchObject({ feishu: { state: 'paused', code: 'feishuCliUnset' }, history: { state: 'paused', code: 'feishuBotMissing' } })
+    expect(unset.health).toMatchObject({ 'feishu:feishu': { state: 'paused', code: 'feishuCliUnset' }, 'history:feishu': { state: 'paused', code: 'feishuBotMissing' } })
     const problem = new SetupError('feishuBotNotReady', { app: 'cli_bot', status: 'missing' }).problem
     const refused = await run({ deployment: testDeployment({ feishu: undefined }), feishuProblem: problem })
     // A failed bot check waits for the operator's fix and a check; it does not retry by itself like a polling error.
-    expect(refused.health.feishu).toEqual({ state: 'paused', detail: problem.detail })
-    expect((await run({ configured: () => false })).health.feishu).toEqual({ state: 'paused', detail: 'Waiting for the deployment check', code: 'setupPending' })
+    expect(refused.health['feishu:feishu']).toEqual({ state: 'paused', detail: problem.detail })
+    expect((await run({ configured: () => false })).health['feishu:feishu']).toEqual({ state: 'paused', detail: 'Waiting for the deployment check', code: 'setupPending' })
   })
   it('translates live events into triggers keyed by root message, and drops the bot\'s own messages', () => {
     const trigger = feishuTrigger({ message_id: 'om_2', chat_id: 'oc_1', chat_type: 'group', sender_id: MEMBER, sender_type: 'user', content: 'hi', create_time: '1757376000000', mentions: [{ id: 'cli_bot' }], root_id: 'om_1', parent_id: 'om_1', thread_id: 'omt_1', message_app_link: 'https://applink/x' }, 'ou_bot', 'cli_bot')!
@@ -315,31 +323,31 @@ describe('feishu source', () => {
     const sync = feishuKind.policy!.sync!
     expect(sync.ready({ allowed: [] })).toBe(false)
     const signal = new AbortController().signal
-    expect(await sync.run(h, { allowed: [{ id: MEMBER, name: 'Alice' }, { id: 'ou_bob', name: 'Bob' }], syncChat: 'oc_team' }, signal))
+    expect(await sync.run(h, 'feishu', { allowed: [{ id: MEMBER, name: 'Alice' }, { id: 'ou_bob', name: 'Bob' }], syncChat: 'oc_team' }, signal))
       .toEqual({ allowed: [{ id: MEMBER, name: 'Alice Li' }, { id: 'ou_carol', name: 'Carol' }], syncChat: 'oc_team' })
     expect(withSignal).toHaveBeenCalledWith(signal)
     expect(lark.mock.calls[0]![0]).toEqual(expect.arrayContaining(['+chat-members-list', '--chat-id', 'oc_team']))
     lark.mockResolvedValue({ users: [], has_more: true })
-    await expect(sync.run(h, { allowed: [], syncChat: 'oc_team' }, new AbortController().signal)).rejects.toThrow('incomplete member list')
+    await expect(sync.run(h, 'feishu', { allowed: [], syncChat: 'oc_team' }, new AbortController().signal)).rejects.toThrow('incomplete member list')
     h.store.close()
   })
 })
 describe('github source', () => {
   it('normalizes comments and reviews into triggers with review-thread channels, and marks only GitHub Apps and machine accounts as automated', () => {
-    const trigger = commentTrigger({ id: 5, body: 'nit', user: { login: 'review-bot[bot]', type: 'Bot' }, html_url: 'https://github.com/acme/widgets/pull/7#discussion_r5', updated_at: '2026-09-01T00:00:00Z' }, { number: 7, isPr: true, prAuthor: 'agent-bot' }, 'inline', 'agent-bot')
+    const trigger = commentTrigger({ id: 5, body: 'nit', user: { login: 'review-bot[bot]', type: 'Bot' }, html_url: 'https://github.com/acme/widgets/pull/7#discussion_r5', updated_at: '2026-09-01T00:00:00Z' }, { number: 7, isPr: true, prAuthor: 'agent-bot' }, 'inline', 'agent-bot', githubRef)
     expect(trigger).toMatchObject({ source: 'github', threads: [{ source: 'github', id: '7' }], human: false, channel: { address: { number: '7', url: 'https://github.com/acme/widgets/pull/7#discussion_r5' } }, meta: { commentId: 5, kind: 'inline', prAuthor: 'agent-bot' } })
     // A review bot on an ordinary account counts as a person here; the prompts name it as automated.
-    expect(commentTrigger({ id: 6, body: 'x', user: { login: 'review-bot', type: 'User' } }, { number: 7, isPr: false }, 'conversation', 'agent-bot').human).toBe(true)
-    expect(commentTrigger({ id: 7, body: 'x', user: { login: 'ci[bot]', type: 'Bot' } }, { number: 7, isPr: false }, 'conversation', 'agent-bot').human).toBe(false)
+    expect(commentTrigger({ id: 6, body: 'x', user: { login: 'review-bot', type: 'User' } }, { number: 7, isPr: false }, 'conversation', 'agent-bot', githubRef).human).toBe(true)
+    expect(commentTrigger({ id: 7, body: 'x', user: { login: 'ci[bot]', type: 'Bot' } }, { number: 7, isPr: false }, 'conversation', 'agent-bot', githubRef).human).toBe(false)
     // A review decision reaches the ticket even without a body; a plain review comment carries only its body.
-    const review = (fields: Partial<GithubComment>) => commentTrigger({ id: 8, user: { login: 'carol', type: 'User' }, submitted_at: '2026-09-01T00:00:00Z', ...fields }, { number: 7, isPr: true }, 'review', 'agent-bot').text
+    const review = (fields: Partial<GithubComment>) => commentTrigger({ id: 8, user: { login: 'carol', type: 'User' }, submitted_at: '2026-09-01T00:00:00Z', ...fields }, { number: 7, isPr: true }, 'review', 'agent-bot', githubRef).text
     expect(review({ state: 'APPROVED', commit_id: 'abc123' })).toBe('APPROVED review of commit abc123')
     expect(review({ state: 'CHANGES_REQUESTED', commit_id: 'abc123', body: 'Keep the margin' })).toBe('CHANGES_REQUESTED review of commit abc123\n\nKeep the margin')
     expect(review({ state: 'COMMENTED', commit_id: 'abc123' })).toBe('')
     // A mention of the agent addresses it, whatever the case; the agent's own messages are automated.
-    expect(commentTrigger({ id: 9, body: '@Agent-Bot please fix', user: { login: 'alice', type: 'User' } }, { number: 7, isPr: true }, 'conversation', 'agent-bot')).toMatchObject({ human: true, addressed: 'mention' })
-    expect(commentTrigger({ id: 10, body: 'mail@agent-bot.example', user: { login: 'alice', type: 'User' } }, { number: 7, isPr: true }, 'conversation', 'agent-bot')).not.toHaveProperty('addressed')
-    expect(commentTrigger({ id: 11, body: 'pushed', user: { login: 'Agent-Bot', type: 'User' } }, { number: 7, isPr: true }, 'conversation', 'agent-bot').human).toBe(false)
+    expect(commentTrigger({ id: 9, body: '@Agent-Bot please fix', user: { login: 'alice', type: 'User' } }, { number: 7, isPr: true }, 'conversation', 'agent-bot', githubRef)).toMatchObject({ human: true, addressed: 'mention' })
+    expect(commentTrigger({ id: 10, body: 'mail@agent-bot.example', user: { login: 'alice', type: 'User' } }, { number: 7, isPr: true }, 'conversation', 'agent-bot', githubRef)).not.toHaveProperty('addressed')
+    expect(commentTrigger({ id: 11, body: 'pushed', user: { login: 'Agent-Bot', type: 'User' } }, { number: 7, isPr: true }, 'conversation', 'agent-bot', githubRef).human).toBe(false)
   })
   it('reads the address of an Issue, a PR or a review comment of the repository, and nothing else', () => {
     expect(githubAddress('https://api.github.com/repos/acme/widgets/pulls/9', 'acme/widgets')).toEqual({ number: 9, pr: true })
@@ -369,7 +377,7 @@ describe('github source', () => {
     const comment: GithubComment = { id: 5, body: 'Use the theme token', user: { login: 'carol', type: 'User' }, path: 'src/render.ts', line: 43,
       diff_hunk: '@@ -40,6 +40,8 @@\n   const title = view.title\n   const margin = 12\n+  const padding = 8', in_reply_to_id: 4,
       html_url: 'https://github.com/acme/widgets/pull/9#discussion_r5', created_at: '2026-09-09T00:00:00Z' }
-    const trigger = commentTrigger(comment, { number: 9, isPr: true }, 'inline', 'agent-bot')
+    const trigger = commentTrigger(comment, { number: 9, isPr: true }, 'inline', 'agent-bot', githubRef)
     expect(trigger.text).toBe('src/render.ts:43\n   const title = view.title\n   const margin = 12\n+  const padding = 8\n\nUse the theme token')
     expect(trigger.meta).toMatchObject({ path: 'src/render.ts', line: 43, inReplyTo: 4, commentId: 5, kind: 'inline' })
   })
@@ -379,7 +387,7 @@ describe('github source', () => {
       line: 43, html_url: `https://github.com/acme/widgets/pull/9#discussion_r${id}`, created_at: `2026-09-09T00:00:0${id}Z`,
       ...reply ? { in_reply_to_id: reply } : {} })
     vi.spyOn(h.commands, 'pages').mockResolvedValue([comment(1), comment(2, 1), comment(3), comment(4, 1)])
-    const trigger = commentTrigger(comment(4, 1), { number: 9, isPr: true }, 'inline', 'agent-bot')
+    const trigger = commentTrigger(comment(4, 1), { number: 9, isPr: true }, 'inline', 'agent-bot', githubRef)
     const context = h.sources.threadContext(trigger)!
     const thread = await context.read(h.commands, 'thread')
     expect(thread).toMatchObject({ status: 'review_thread' })
@@ -405,16 +413,16 @@ describe('github source', () => {
     const decisionId = 'd'
     const request = feishuTrigger({ message_id: 'om_1', chat_id: 'oc_1', chat_type: 'group', sender_id: MEMBER, sender_type: 'user', content: '@bot 修一下标题', create_time: '1', mentions: [{ id: 'ou_bot' }] }, 'ou_bot', 'cli_bot')!
     h.store.triggers.save(request)
-    h.store.tickets.save({ id: 't1', title: 'one', decisionId, mandate: { strength: 'explicit', policyVersion: '', basis: { via: 'listed' }, actor: { source: 'feishu', id: MEMBER }, scope: '' }, channels: [{ source: 'feishu', thread: 'feishu:oc_1', address: { chatId: 'oc_1', messageId: 'om_1' } }], assignments: [{ id: 'a', state: 'running', createdAt: '' }], inputs: [], undelivered: [], createdAt: '', updatedAt: '', execution: execution('one'), origin: { triggerId: request.id, triggerIds: [request.id] } })
+    h.store.tickets.save({ id: 't1', title: 'one', repositoryId: REPO, decisionId, mandate: { strength: 'explicit', policyVersion: '', basis: { via: 'listed' }, actor: { source: 'feishu', id: MEMBER }, scope: '' }, channels: [{ source: 'feishu', thread: 'feishu:oc_1', address: { chatId: 'oc_1', messageId: 'om_1' } }], assignments: [{ id: 'a', state: 'running', createdAt: '' }], inputs: [], undelivered: [], createdAt: '', updatedAt: '', execution: execution('one'), origin: { triggerId: request.id, triggerIds: [request.id] } })
     const agentsPull = (number: number): Pull => ({ ...openPull(number), user: { login: 'agent-bot' }, head: { sha: 'abc',
       ref: 'agent/one', repo: { full_name: 'acme/widgets' } } })
-    await observePull(h, agentsPull(9))
+    await observePull(h.github, agentsPull(9))
     expect(pullOf(h.store.tickets.get('t1')!)).toBe(9)
     expect(h.store.threads.get('github:9')?.subscriptions).toEqual(['t1'])
     // A ticket that follows a PR moves to another only by its Executor's report.
-    await observePull(h, agentsPull(10))
+    await observePull(h.github, agentsPull(10))
     expect(pullOf(h.store.tickets.get('t1')!)).toBe(9)
-    expect(await observePull(h, endedPull(9, '2026-09-02T00:00:00Z'))).toBe(true)
+    expect(await observePull(h.github, endedPull(9, '2026-09-02T00:00:00Z'))).toBe(true)
     expect(h.store.tickets.get('t1')).toMatchObject({ ended: { by: 'executor', outcome: 'merged', at: '2026-09-02T00:00:00.000Z' } })
     expect(h.store.threads.get('github:9')?.subscriptions).toEqual(['t1'])
     // The notice its end gives follows the language of the source request.
@@ -423,7 +431,7 @@ describe('github source', () => {
     expect(h.executor.stop).toHaveBeenCalledOnce()
     // Resumed after the merge, the ticket works on: a later look at the merged PR reports nothing again.
     h.store.tickets.save({ ...h.store.tickets.get('t1')!, ended: undefined, assignments: [...h.store.tickets.get('t1')!.assignments, { id: 'a2', state: 'pending', createdAt: '2026-09-03T00:00:00Z' }] })
-    expect(await observePull(h, endedPull(9, '2026-09-02T00:00:00Z'))).toBe(true)
+    expect(await observePull(h.github, endedPull(9, '2026-09-02T00:00:00Z'))).toBe(true)
     expect(h.store.tickets.get('t1')!.ended).toBeUndefined()
     // Once the resumed work reports ready, the ticket ends with the merged PR, at that time and without a second notice.
     h.engine.report('t1', { state: 'ready', summary: 'answered' })
@@ -435,16 +443,16 @@ describe('github source', () => {
   })
   it('keeps a ticket working on its other open PR when one of its PRs merges', async () => {
     const h = host()
-    h.store.tickets.save({ id: 't3', title: 'three', decisionId: 'd3', mandate: { strength: 'explicit', policyVersion: '', basis: { via: 'listed' }, actor: { source: 'feishu', id: MEMBER }, scope: '' }, channels: [], assignments: [{ id: 'a1', state: 'running', createdAt: '2026-09-01T00:00:00Z' }], inputs: [], undelivered: [], execution: execution('fix-3'), origin: { triggerId: 'x', triggerIds: [] }, createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z' })
-    expect(claimPull(h, 't3', agentsPull(21, 'agent/fix-3'))).toBeUndefined()
-    expect(claimPull(h, 't3', agentsPull(22, 'agent/fix-3'))).toBeUndefined()
-    expect(await observePull(h, endedPull(22, '2026-09-02T00:00:00Z'))).toBe(true)
-    expect(h.store.tickets.get('t3')).toMatchObject({ follows: [{ thread: 'github:21', own: true },
-      { thread: 'github:22', own: true, closed: { at: '2026-09-02T00:00:00.000Z', outcome: 'merged' } }] })
+    h.store.tickets.save({ id: 't3', title: 'three', repositoryId: REPO, decisionId: 'd3', mandate: { strength: 'explicit', policyVersion: '', basis: { via: 'listed' }, actor: { source: 'feishu', id: MEMBER }, scope: '' }, channels: [], assignments: [{ id: 'a1', state: 'running', createdAt: '2026-09-01T00:00:00Z' }], inputs: [], undelivered: [], execution: execution('fix-3'), origin: { triggerId: 'x', triggerIds: [] }, createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z' })
+    expect(claimPull(h.github, 't3', agentsPull(21, 'agent/fix-3'))).toBeUndefined()
+    expect(claimPull(h.github, 't3', agentsPull(22, 'agent/fix-3'))).toBeUndefined()
+    expect(await observePull(h.github, endedPull(22, '2026-09-02T00:00:00Z'))).toBe(true)
+    expect(h.store.tickets.get('t3')).toMatchObject({ follows: [{ thread: 'github:21', own: true, repositoryId: REPO },
+      { thread: 'github:22', own: true, repositoryId: REPO, closed: { at: '2026-09-02T00:00:00.000Z', outcome: 'merged' } }] })
     expect(h.store.tickets.get('t3')).not.toHaveProperty('ended')
     expect(pullOf(h.store.tickets.get('t3')!)).toBe(21)
     expect(h.executor.stop).not.toHaveBeenCalled()
-    expect(await observePull(h, endedPull(21, '2026-09-03T00:00:00Z'))).toBe(true)
+    expect(await observePull(h.github, endedPull(21, '2026-09-03T00:00:00Z'))).toBe(true)
     expect(h.store.tickets.get('t3')).toMatchObject({ ended: { outcome: 'merged', at: '2026-09-03T00:00:00.000Z' } })
     // A PR's end is kept on the tickets that follow it, so binding and closing write no key-value record.
     expect(h.store.keys('github-')).toEqual([])
@@ -453,17 +461,17 @@ describe('github source', () => {
   it('follows a PR it opened again when it reopens, while another PR it opened is open', async () => {
     const h = host()
     h.store.tickets.save({ ...openTicket('t5'), execution: execution('fix-5'),
-      follows: [{ thread: 'github:21', own: true }, { thread: 'github:22', own: true, closed: { at: '2026-09-02T00:00:00.000Z', outcome: 'closed' } }] })
-    await observePull(h, agentsPull(22, 'agent/fix-5'))
-    expect(h.store.tickets.get('t5')!.follows).toEqual([{ thread: 'github:21', own: true }, { thread: 'github:22', own: true }])
+      follows: [{ thread: 'github:21', own: true, repositoryId: REPO }, { thread: 'github:22', own: true, repositoryId: REPO, closed: { at: '2026-09-02T00:00:00.000Z', outcome: 'closed' } }] })
+    await observePull(h.github, agentsPull(22, 'agent/fix-5'))
+    expect(h.store.tickets.get('t5')!.follows).toEqual([{ thread: 'github:21', own: true, repositoryId: REPO }, { thread: 'github:22', own: true, repositoryId: REPO }])
     h.store.close()
   })
   it('ends a ticket when its own PR merges, though the PR it started from is still open', async () => {
     const h = host()
-    h.store.tickets.save({ id: 't4', title: 'four', decisionId: 'd4', mandate: { strength: 'explicit', policyVersion: '', basis: { via: 'listed' }, actor: { source: 'github', id: 'alice' }, scope: '' }, channels: [githubChannel(30, 'https://github.com/acme/widgets/pull/30#issuecomment-1')], assignments: [{ id: 'a1', state: 'running', createdAt: '2026-09-01T00:00:00Z' }], inputs: [], undelivered: [], execution: execution('fix-4'), origin: { triggerId: 'x', triggerIds: [] }, createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z' })
+    h.store.tickets.save({ id: 't4', title: 'four', repositoryId: REPO, decisionId: 'd4', mandate: { strength: 'explicit', policyVersion: '', basis: { via: 'listed' }, actor: { source: 'github', id: 'alice' }, scope: '' }, channels: [githubChannel(githubRef, 30, 'https://github.com/acme/widgets/pull/30#issuecomment-1')], assignments: [{ id: 'a1', state: 'running', createdAt: '2026-09-01T00:00:00Z' }], inputs: [], undelivered: [], execution: execution('fix-4'), origin: { triggerId: 'x', triggerIds: [] }, createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z' })
     h.store.threads.save({ key: 'github:30', ref: { source: 'github', id: '30' }, createdAt: '', subscriptions: ['t4'], correlated: [], pending: [], meta: { number: 30, isPr: true } })
-    expect(claimPull(h, 't4', agentsPull(31, 'agent/fix-4'))).toBeUndefined()
-    expect(await observePull(h, endedPull(31, '2026-09-02T00:00:00Z'))).toBe(true)
+    expect(claimPull(h.github, 't4', agentsPull(31, 'agent/fix-4'))).toBeUndefined()
+    expect(await observePull(h.github, endedPull(31, '2026-09-02T00:00:00Z'))).toBe(true)
     expect(h.store.tickets.get('t4')).toMatchObject({ ended: { outcome: 'merged' } })
     h.store.close()
   })
@@ -471,8 +479,8 @@ describe('github source', () => {
     const h = host()
     const request = feishuTrigger({ message_id: 'om_2', chat_id: 'oc_1', chat_type: 'group', sender_id: MEMBER, sender_type: 'user', content: '@bot fix the title', create_time: '1', mentions: [{ id: 'ou_bot' }] }, 'ou_bot', 'cli_bot')!
     h.store.triggers.save(request)
-    h.store.tickets.save({ id: 't2', title: 'two', decisionId: 'd2', mandate: { strength: 'explicit', policyVersion: '', basis: { via: 'listed' }, actor: { source: 'feishu', id: MEMBER }, scope: '' }, channels: [{ source: 'feishu', thread: 'feishu:oc_1', address: { chatId: 'oc_1', messageId: 'om_2' } }], assignments: [], inputs: [], undelivered: [], createdAt: '', updatedAt: '', ...pulled(12), origin: { triggerId: request.id, triggerIds: [request.id] } })
-    expect(await observePull(h, endedPull(12, '2026-09-02T00:00:00Z', false))).toBe(true)
+    h.store.tickets.save({ id: 't2', title: 'two', repositoryId: REPO, decisionId: 'd2', mandate: { strength: 'explicit', policyVersion: '', basis: { via: 'listed' }, actor: { source: 'feishu', id: MEMBER }, scope: '' }, channels: [{ source: 'feishu', thread: 'feishu:oc_1', address: { chatId: 'oc_1', messageId: 'om_2' } }], assignments: [], inputs: [], undelivered: [], createdAt: '', updatedAt: '', ...pulled(12), origin: { triggerId: request.id, triggerIds: [request.id] } })
+    expect(await observePull(h.github, endedPull(12, '2026-09-02T00:00:00Z', false))).toBe(true)
     expect(pullEndNotices(h.store.tickets.get('t2')!, request.text, 'acme/widgets'))
       .toEqual([expect.objectContaining({ text: '[PR #12](https://github.com/acme/widgets/pull/12) was closed without merging.' })])
     h.store.close()
@@ -486,10 +494,10 @@ describe('github source', () => {
     github(h, { 'issues/7': { ...issue(7, { title: 'Fix the margin' }), pull_request: { url: 'x' } }, 'pulls/7': openPull(7),
       'issues/7/comments': [comment(1, 'agent-bot', '2026-09-01T01:00:00Z', 'mine'), comment(2, 'a', '2026-08-01T00:00:00Z', 'old'),
         comment(3, 'b', '2026-09-01T02:00:00Z', 'new')] })
-    await pollGithubThreads(h)
+    await pollGithubThreads(h.github)
     expect(h.receive).toHaveBeenCalledTimes(1)
     expect(h.receive.mock.calls[0]![0]).toMatchObject({ actor: { id: 'b' }, text: 'new', threads: [{ source: 'github', id: '7' }] })
-    expect(h.store.get('github-cursor:7')).toBeDefined()
+    expect(h.store.get(kv.cursor(7))).toBeDefined()
     // A Thread whose title the Source had not read yet is named by its number and title, with its number as a fact.
     expect(h.store.threads.get('github:7')!.meta).toMatchObject({ title: 'Fix the margin', label: '#7 Fix the margin', facts: { number: { value: '#7' } } })
     h.store.close()
@@ -504,10 +512,10 @@ describe('github source', () => {
       ended: { at: new Date(Date.now() - ago).toISOString(), by: 'executor', reason: 'merged', outcome: 'merged' } })
     const reads = github(h, {})
     ended(3 * day)
-    await pollGithubThreads(h)
+    await pollGithubThreads(h.github)
     expect(bare(reads)).toEqual(['issues/7/comments'])
     ended(15 * day)
-    await pollGithubThreads(h)
+    await pollGithubThreads(h.github)
     expect(bare(reads)).toEqual(['issues/7/comments'])
     h.store.close()
   })
@@ -519,15 +527,15 @@ describe('github source', () => {
       subscriptions, correlated: [], pending: [], meta: { number: 7, isPr: false, title: 'Login fails' } })
     const reads = github(h, {})
     thread(15 * day)
-    await pollGithubThreads(h)
+    await pollGithubThreads(h.github)
     expect(reads).toEqual([])
     thread(13 * day)
-    await pollGithubThreads(h)
+    await pollGithubThreads(h.github)
     expect(bare(reads)).toEqual(['issues/7/comments'])
     // A live ticket keeps a quiet Thread polled.
     h.store.tickets.save(openTicket('t9'))
     thread(15 * day, ['t9'])
-    await pollGithubThreads(h)
+    await pollGithubThreads(h.github)
     expect(bare(reads)).toEqual(['issues/7/comments', 'issues/7/comments'])
     h.store.close()
   })
@@ -540,7 +548,7 @@ describe('github source', () => {
       { id: 4, state: 'APPROVED', commit_id: 'abc123', user: { login: 'carol', type: 'User' }, submitted_at: '2026-09-02T00:00:00Z' },
       { id: 5, state: 'COMMENTED', commit_id: 'abc123', body: '', user: { login: 'dave', type: 'User' }, submitted_at: '2026-09-02T00:01:00Z' },
     ] })
-    await pollGithubThreads(h)
+    await pollGithubThreads(h.github)
     expect(h.receive).toHaveBeenCalledTimes(1)
     expect(h.receive.mock.calls[0]![0]).toMatchObject({ actor: { id: 'carol' }, text: 'APPROVED review of commit abc123', meta: { kind: 'review' } })
     h.store.close()
@@ -556,25 +564,25 @@ describe('github source', () => {
     const checks = { check_runs: [{ name: 'test', status: 'in_progress', conclusion: null }] }
     const routes: Record<string, unknown> = { notifications: [notification(9, 'pulls')], 'pulls/9': pr, 'commits/abc/check-runs': checks }
     const reads = github(h, routes)
-    await pollRound(h)
+    await pollRound(h.github)
     // The notification, the ticket's PR and the subscribed Thread share one read of the PR.
     expect(reads.filter(path => path === 'pulls/9')).toHaveLength(1)
     const facts = () => h.store.threads.get('github:9')!.meta.facts as Record<string, unknown>
     expect(facts()).toMatchObject({ autoMerge: { label: { zh: '自动合并', en: 'Auto-merge' } }, ci: { value: '1' } })
     routes['pulls/9'] = { ...pr, auto_merge: null }
     routes['commits/abc/check-runs'] = { check_runs: [{ name: 'test', status: 'completed', conclusion: 'failure' }] }
-    await pollRound(h)
+    await pollRound(h.github)
     expect(facts()).not.toHaveProperty('autoMerge')
     // Only a change after the first look is a Trigger.
     expect(h.receive.mock.calls.map(([trigger]) => trigger.meta)).toEqual([expect.objectContaining({ ci: true, revision: 1 })])
     routes['pulls/9'] = { ...pr, state: 'closed', merged: true, merged_at: '2026-09-09T00:00:00Z' }
-    await pollRound(h)
+    await pollRound(h.github)
     expect(h.store.tickets.get('t9')).toMatchObject({ ended: { outcome: 'merged' } })
     h.store.close()
   })
   it('reads each notified Issue alone and reads a failed one again next round, from where it was', async () => {
     const h = host()
-    h.store.set('github-since', '2026-09-08T00:00:00.000Z')
+    h.store.set(kv.since, '2026-09-08T00:00:00.000Z')
     h.store.threads.save({ key: 'github:12', ref: { source: 'github', id: '12' }, createdAt: '', subscriptions: [], correlated: [],
       pending: [], meta: {} })
     const mention = (id: number, number: number, at: string): GithubComment => ({ id, body: '@agent-bot take this',
@@ -585,57 +593,57 @@ describe('github source', () => {
       'issues/13/comments': [mention(1, 13, '2026-09-08T01:00:00Z')] }
     github(h, routes)
     // A read that failed for another reason than a missing Issue fails the round once every step ran.
-    await expect(pollRound(h)).rejects.toThrow('#12: Error: gh: Bad Gateway (HTTP 502)')
+    await expect(pollRound(h.github)).rejects.toThrow('#12: Error: gh: Bad Gateway (HTTP 502)')
     expect(h.receive.mock.calls.map(([trigger]) => trigger.meta.number)).toEqual([13])
     // The cursor moved together with the Issue it does not cover yet.
-    expect(Date.parse(h.store.get<string>('github-since')!)).toBeGreaterThan(Date.parse('2026-09-08T00:00:00.000Z'))
-    expect(h.store.get('github-retry')).toEqual({ 12: { since: '2026-09-08T00:00:00.000Z', pr: false, attempts: 1, failedAt: expect.any(String) } })
+    expect(Date.parse(h.store.get<string>(kv.since)!)).toBeGreaterThan(Date.parse('2026-09-08T00:00:00.000Z'))
+    expect(h.store.get(kv.retry)).toEqual({ 12: { since: '2026-09-08T00:00:00.000Z', pr: false, attempts: 1, failedAt: expect.any(String) } })
     expect(h.store.threads.get('github:12')!.meta.pollError).toContain('Bad Gateway')
     Object.assign(routes, { notifications: [], 'issues/12': issue(12, { created_at: '2026-08-01T00:00:00Z' }),
       'issues/12/comments': [mention(2, 12, '2026-09-08T02:00:00Z')] })
-    await pollRound(h)
+    await pollRound(h.github)
     expect(h.receive.mock.calls.map(([trigger]) => trigger.meta.number)).toEqual([13, 12])
-    expect(h.store.get('github-retry')).toEqual({})
+    expect(h.store.get(kv.retry)).toEqual({})
     expect(h.store.threads.get('github:12')!.meta).not.toHaveProperty('pollError')
     h.store.close()
   })
   it('drops an Issue GitHub reports as deleted after recording it, and reads one it answers 404 for again', async () => {
     const h = host()
-    h.store.set('github-since', '2026-09-08T00:00:00.000Z')
+    h.store.set(kv.since, '2026-09-08T00:00:00.000Z')
     h.store.tickets.save(openTicket('t14'))
     h.store.threads.save({ key: 'github:14', ref: { source: 'github', id: '14' }, createdAt: '', lastAt: new Date().toISOString(),
       subscriptions: ['t14'], correlated: [], pending: [], meta: { number: 14, isPr: false, title: 'Gone' } })
     const deleted = refused(410, 'This issue was deleted')
     github(h, { notifications: [notification(14), notification(15)], 'issues/14': deleted, 'issues/15': deleted })
-    await pollRound(h)
-    expect(h.store.get('github-retry')).toEqual({})
+    await pollRound(h.github)
+    expect(h.store.get(kv.retry)).toEqual({})
     // Dropping a read moves no read position.
-    expect(h.store.get('github-cursor:14')).toBeUndefined()
+    expect(h.store.get(kv.cursor(14))).toBeUndefined()
     expect(h.store.threads.get('github:14')!.meta.pollError).toContain('deleted')
     // Without a Thread to keep it, the Source's health names it.
-    expect(h.health.github).toMatchObject({ state: 'ready', detail: '2 notifications; next poll ≥ 60s; deleted on GitHub: #14, #15' })
+    expect(h.health['github:github']).toMatchObject({ state: 'ready', detail: '2 notifications; next poll ≥ 60s; deleted on GitHub: #14, #15' })
     // GitHub also answers 404 for a private repository the agent lost access to: that is a failure read again.
     github(h, { notifications: [notification(16)] })
-    await expect(pollRound(h)).rejects.toThrow('#16: Error: gh: Not Found (HTTP 404)')
-    expect(h.store.get('github-retry')).toEqual({ 16: expect.objectContaining({ pr: false }) })
+    await expect(pollRound(h.github)).rejects.toThrow('#16: Error: gh: Not Found (HTTP 404)')
+    expect(h.store.get(kv.retry)).toEqual({ 16: expect.objectContaining({ pr: false }) })
     h.store.close()
   })
   it('skips and counts a notification or comment it cannot read, and names the count in the health', async () => {
     const h = host()
-    h.store.set('github-since', '2026-09-08T00:00:00.000Z')
+    h.store.set(kv.since, '2026-09-08T00:00:00.000Z')
     const comment = { id: 3, body: '@agent-bot please fix', user: { login: 'alice', type: 'User' },
       html_url: 'https://github.com/acme/widgets/issues/12#issuecomment-3', created_at: '2026-09-09T00:00:00Z', updated_at: '2026-09-09T00:00:00Z' }
     github(h, { notifications: [notification(12), { id: 'n-odd', subject: {} }], 'issues/12': issue(12,
       { created_at: '2026-08-01T00:00:00Z' }),
       'issues/12/comments': [comment, { body: 'no id' }] })
-    await pollRound(h)
+    await pollRound(h.github)
     expect(h.receive.mock.calls.map(([trigger]) => trigger.text)).toEqual(['@agent-bot please fix'])
-    expect(h.health.github).toMatchObject({ state: 'ready', detail: '1 notifications; next poll ≥ 60s; 2 unreadable items skipped' })
+    expect(h.health['github:github']).toMatchObject({ state: 'ready', detail: '1 notifications; next poll ≥ 60s; 2 unreadable items skipped' })
     h.store.close()
   })
   it('reads every page of the notifications when GitHub says there are more, and waits as long as GitHub asks', async () => {
     const h = host()
-    h.store.set('github-since', '2026-09-08T00:00:00.000Z')
+    h.store.set(kv.since, '2026-09-08T00:00:00.000Z')
     const calls: string[][] = []
     vi.spyOn(h.commands, 'run').mockImplementation(async (_program, args) => {
       calls.push(args)
@@ -647,70 +655,70 @@ describe('github source', () => {
       if (/^issues\/\d+$/.test(path)) return JSON.stringify(issue(Number(path.split('/')[1]), { created_at: '2026-08-01T00:00:00Z' }))
       return JSON.stringify(args.includes('--slurp') ? [[]] : [])
     })
-    expect(await pollRound(h)).toBe(120)
+    expect(await pollRound(h.github)).toBe(120)
     const notifications = calls.filter(args => args[1]!.includes('/notifications'))
     expect(notifications.map(args => args.includes('--paginate'))).toEqual([false, true])
     const paths = calls.map(args => args[1]!.split('?')[0])
     expect(paths).toEqual(expect.arrayContaining(['repos/acme/widgets/issues/12', 'repos/acme/widgets/issues/13']))
-    expect(h.health.github).toMatchObject({ state: 'ready', detail: '2 notifications; next poll ≥ 120s' })
+    expect(h.health['github:github']).toMatchObject({ state: 'ready', detail: '2 notifications; next poll ≥ 120s' })
     h.store.close()
   })
   it('drops a notified Issue whose reads fail for a day, so the Source leaves the error, and keeps its read position', async () => {
     const h = host()
-    h.store.set('github-since', '2026-09-08T00:00:00.000Z')
+    h.store.set(kv.since, '2026-09-08T00:00:00.000Z')
     h.store.threads.save({ key: 'github:16', ref: { source: 'github', id: '16' }, createdAt: '', subscriptions: [], correlated: [], pending: [],
       meta: {} })
-    h.store.set('github-cursor:16', '2026-09-01T00:00:00.000Z')
+    h.store.set(kv.cursor(16), '2026-09-01T00:00:00.000Z')
     github(h, { notifications: [notification(16)] })
-    await expect(pollRound(h)).rejects.toThrow('#16: Error: gh: Not Found (HTTP 404)')
-    const first = h.store.get<Record<string, { failedAt: string; attempts: number }>>('github-retry')![16]!
+    await expect(pollRound(h.github)).rejects.toThrow('#16: Error: gh: Not Found (HTTP 404)')
+    const first = h.store.get(kv.retry)![16]!
     expect(first).toMatchObject({ attempts: 1, failedAt: expect.any(String) })
     // However many reads failed, a day of failures has not passed: the read is retried, and the round still fails.
-    h.store.set('github-retry', { 16: { ...first, attempts: 99 } })
+    h.store.set(kv.retry, { 16: { ...first, attempts: 99 } } as never)
     github(h, { notifications: [] })
-    await expect(pollRound(h)).rejects.toThrow('#16')
+    await expect(pollRound(h.github)).rejects.toThrow('#16')
     // A day after the first failed read, it is dropped: its Thread keeps the error, the health names it, and the round does not
     // fail. Its read position stays, so a later read takes in what the failed reads missed.
-    h.store.set('github-retry', { 16: { ...first, failedAt: new Date(Date.now() - 25 * 3600_000).toISOString() } })
-    await pollRound(h)
-    expect(h.store.get('github-retry')).toEqual({})
-    expect(h.store.get('github-cursor:16')).toBe('2026-09-01T00:00:00.000Z')
+    h.store.set(kv.retry, { 16: { ...first, failedAt: new Date(Date.now() - 25 * 3600_000).toISOString() } } as never)
+    await pollRound(h.github)
+    expect(h.store.get(kv.retry)).toEqual({})
+    expect(h.store.get(kv.cursor(16))).toBe('2026-09-01T00:00:00.000Z')
     expect(h.store.threads.get('github:16')?.meta.pollError).toContain('Not Found')
-    expect(h.health.github).toMatchObject({ state: 'ready',
+    expect(h.health['github:github']).toMatchObject({ state: 'ready',
       detail: '0 notifications; next poll ≥ 60s; dropped after their reads kept failing: #16' })
     h.store.close()
   })
   it('polls the PRs of open tickets and subscribed Threads although the notifications fail, and then fails the round', async () => {
     const h = host()
-    h.store.set('github-since', '2026-09-08T00:00:00.000Z')
+    h.store.set(kv.since, '2026-09-08T00:00:00.000Z')
     h.store.threads.save({ key: 'github:7', ref: { source: 'github', id: '7' }, createdAt: '2026-09-01T00:00:00Z',
       lastAt: new Date().toISOString(), subscriptions: ['t'], correlated: [], pending: [], meta: { number: 7, isPr: false,
       title: 'Login fails' } })
     github(h, { notifications: refused(503, 'Service Unavailable'), 'issues/7/comments': [{ id: 3, body: 'still broken',
       user: { login: 'b', type: 'User' }, created_at: '2026-09-02T00:00:00Z', updated_at: '2026-09-02T00:00:00Z' }] })
-    await expect(pollRound(h)).rejects.toThrow('HTTP 503')
+    await expect(pollRound(h.github)).rejects.toThrow('HTTP 503')
     expect(h.receive).toHaveBeenCalledWith(expect.objectContaining({ text: 'still broken' }))
-    expect(h.store.get('github-since')).toBe('2026-09-08T00:00:00.000Z')
+    expect(h.store.get(kv.since)).toBe('2026-09-08T00:00:00.000Z')
     h.store.close()
   })
   it('takes in the description of a notified PR someone opened since the cursor, as a new PR\'s stream does', async () => {
     const h = host()
-    h.store.set('github-since', '2026-09-08T00:00:00.000Z')
+    h.store.set(kv.since, '2026-09-08T00:00:00.000Z')
     const pr = { ...openPull(9), body: '@agent-bot please review', created_at: '2026-09-09T00:00:00Z' }
     github(h, { notifications: [notification(9, 'pulls')], 'pulls/9': pr })
-    await pollRound(h)
+    await pollRound(h.github)
     const opened = h.receive.mock.calls.map(([trigger]) => trigger).filter(trigger => trigger.meta.kind === 'pull')
-    const id = issueTrigger({ ...pr, id: 9 } as GithubIssue, 'agent-bot').id
+    const id = issueTrigger({ ...pr, id: 9 } as GithubIssue, 'agent-bot', githubRef).id
     expect(opened).toEqual([expect.objectContaining({ id, addressed: 'mention', actor: { source: 'github', id: 'carol' },
       meta: expect.objectContaining({ number: 9, isPr: true, prAuthor: 'carol' }) })])
     // The agent's own PR, and one opened before the cursor, bring no description.
     h.receive.mockClear()
-    h.store.set('github-since', '2026-09-08T00:00:00.000Z')
+    h.store.set(kv.since, '2026-09-08T00:00:00.000Z')
     github(h, { notifications: [notification(9, 'pulls')], 'pulls/9': { ...pr, user: { login: 'agent-bot' } } })
-    await pollRound(h)
-    h.store.set('github-since', '2026-09-10T00:00:00.000Z')
+    await pollRound(h.github)
+    h.store.set(kv.since, '2026-09-10T00:00:00.000Z')
     github(h, { notifications: [{ ...notification(9, 'pulls'), updated_at: '2026-09-11T00:00:00Z' }], 'pulls/9': pr })
-    await pollRound(h)
+    await pollRound(h.github)
     expect(h.receive.mock.calls.filter(([trigger]) => trigger.meta.kind === 'pull')).toEqual([])
     h.store.close()
   })
@@ -720,15 +728,15 @@ describe('github source', () => {
     subscribed(h, { source: 'github', id: 'ci:main' })
     h.store.threads.save({ ...h.store.threads.get('github:ci:main')!, lastAt: new Date().toISOString() })
     const reads = github(h, {})
-    await pollGithubThreads(h)
+    await pollGithubThreads(h.github)
     expect(reads).toEqual([])
     expect(h.store.threads.get('github:ci:main')!.meta).not.toHaveProperty('pollError')
     h.store.close()
   })
   it('drops an Issue or a ticket\'s PR that GitHub answers 410 for, and keeps a failed PR read on its Thread', async () => {
     const h = host()
-    h.store.set('github-since', '2026-09-08T00:00:00.000Z')
-    h.store.tickets.save({ ...openTicket('ticket'), follows: [{ thread: 'github:7', own: true }, { thread: 'github:8', own: true }] })
+    h.store.set(kv.since, '2026-09-08T00:00:00.000Z')
+    h.store.tickets.save({ ...openTicket('ticket'), follows: [{ thread: 'github:7', own: true, repositoryId: REPO }, { thread: 'github:8', own: true, repositoryId: REPO }] })
     subscribed(h, { source: 'github', id: '5' }, { number: 5, isPr: false, title: 'Gone' })
     h.store.threads.save({ ...h.store.threads.get('github:5')!, lastAt: new Date().toISOString() })
     // The PRs' Threads, which nothing subscribes to, so only the ticket's PR reads reach them.
@@ -745,7 +753,7 @@ describe('github source', () => {
       if (path === 'pulls/8') throw refused(502, 'Bad Gateway')
       return JSON.stringify(args.includes('--slurp') ? [[]] : [])
     })
-    await expect(pollRound(h)).rejects.toThrow(/#8: .*502/)
+    await expect(pollRound(h.github)).rejects.toThrow(/#8: .*502/)
     expect(h.store.threads.get('github:8')!.meta.pollError).toContain('502')
     expect(h.store.threads.get('github:7')!.meta.pollError).toContain('410')
     vi.mocked(h.commands.run).mockImplementation(async (_program, args) => {
@@ -755,18 +763,18 @@ describe('github source', () => {
       return JSON.stringify(args.includes('--slurp') ? [[]] : [])
     })
     // With every failure a 410, the round succeeds and names what GitHub deleted.
-    await pollRound(h)
-    expect(h.health.github).toMatchObject({ state: 'ready', detail: expect.stringContaining('deleted on GitHub: #5, #7, #8') })
+    await pollRound(h.github)
+    expect(h.health['github:github']).toMatchObject({ state: 'ready', detail: expect.stringContaining('deleted on GitHub: #5, #7, #8') })
     h.store.close()
   })
   it('waits for setup, pauses while the Source is off, and counts only consecutive failed polls towards an error', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     try {
       const start = async (overrides: Partial<SourceContextDeps>,
-        github: { enabled: boolean; config: Record<string, unknown> } = { enabled: true, config: {} }) => {
+        github: { kind: 'github', enabled: boolean; config: Record<string, unknown> } = { kind: 'github', enabled: true, config: {} }) => {
         const board = new HealthBoard()
         const settings = SettingsSchema.parse({ sources: { github } })
-        const sources = new SourceRegistry(() => settings, board)
+        const sources = new SourceRegistry(() => settings, board, undefined, sourceId => sourceId === 'github' ? testRepository : undefined)
         healthOf.set(sources, board)
         const value = host({ sources, ...overrides })
         const disposers: (() => unknown)[] = []
@@ -774,10 +782,10 @@ describe('github source', () => {
         return { value, stop: async () => { for (const dispose of disposers) await dispose(); value.store.close() } }
       }
       const pending = await start({ configured: () => false })
-      await vi.waitFor(() => expect(pending.value.health.github).toMatchObject({ state: 'paused', code: 'setupPending' }))
+      await vi.waitFor(() => expect(pending.value.health['github:github']).toMatchObject({ state: 'paused', code: 'setupPending' }))
       await pending.stop()
-      const off = await start({}, { enabled: false, config: {} })
-      await vi.waitFor(() => expect(off.value.health.github).toMatchObject({ state: 'paused', code: 'sourceOff' }))
+      const off = await start({}, { kind: 'github', enabled: false, config: {} })
+      await vi.waitFor(() => expect(off.value.health['github:github']).toMatchObject({ state: 'paused', code: 'sourceOff' }))
       await off.stop()
       // Rounds fail, succeed, fail, fail: only the last two in a row make the error. A round reads through a Commands of its own.
       const outcomes = [false, true, false, false]
@@ -786,7 +794,7 @@ describe('github source', () => {
         if (!outcomes[round++]) throw refused(502, 'Bad Gateway')
         return 'HTTP/2.0 200 OK\r\n\r\n[]'
       })
-      const flaky = await start({}, { enabled: true, config: { failuresBeforeError: 2 } })
+      const flaky = await start({}, { kind: 'github', enabled: true, config: { failuresBeforeError: 2 } })
       // Each round reads its notifications once, then waits a minute for the next.
       const until = async (count: number) => {
         while (round < count) {
@@ -795,9 +803,9 @@ describe('github source', () => {
         }
       }
       await until(3)
-      expect(flaky.value.health.github).toMatchObject({ state: 'ready' })
+      expect(flaky.value.health['github:github']).toMatchObject({ state: 'ready' })
       await until(4)
-      await vi.waitFor(() => expect(flaky.value.health.github).toMatchObject({ state: 'error', code: 'pollFailures', values: { count: '2' } }))
+      await vi.waitFor(() => expect(flaky.value.health['github:github']).toMatchObject({ state: 'error', code: 'pollFailures', values: { count: '2' } }))
       await flaky.stop()
       run.mockRestore()
     } finally { vi.useRealTimers() }
@@ -807,7 +815,7 @@ describe('github source', () => {
     const value = host({ sources: emptyRegistry(), ready: Promise.reject(new Error('lock held')) })
     const disposers: (() => unknown)[] = []
     applyGithub({ orchestrator: value, effect: (effect: () => () => unknown) => { disposers.push(effect()) } } as never)
-    await vi.waitFor(() => expect(value.health.github).toMatchObject({ state: 'error', detail: expect.stringContaining('lock held') }))
+    await vi.waitFor(() => expect(value.health['github:github']).toMatchObject({ state: 'error', detail: expect.stringContaining('lock held') }))
     for (const dispose of disposers) await dispose()
     value.store.close()
   })
@@ -818,7 +826,7 @@ describe('github source', () => {
   /** GitHub as `pollRound` reads it after `since`: one notification per Issue, the Issues, and their conversation comments by number. */
   function notify(h: ReturnType<typeof host>, issues: GithubIssue[], comments: Record<number, GithubComment[]> = {},
     since = '2026-09-08T00:00:00.000Z') {
-    h.store.set('github-since', since)
+    h.store.set(kv.since, since)
     // A notification is as new as the latest change it reports: the Issue or its newest comment.
     const updated = (item: GithubIssue) => [item.updated_at ?? item.created_at,
       ...(comments[item.number] ?? []).map(comment => comment.updated_at ?? '')].sort().at(-1)!
@@ -836,13 +844,13 @@ describe('github source', () => {
     // A pull request reported at its Issue address, and an Issue the agent opened itself, add nothing.
     const agents = { user: { login: 'agent-bot', type: 'User' } }
     notify(h, [issue(12, { body: '@agent-bot please fix the login' }), issue(13, { pull_request: { url: 'x' } }), issue(14, agents)])
-    await pollRound(h)
+    await pollRound(h.github)
     expect(h.receive).toHaveBeenCalledOnce()
-    const id = key('github-issue', '12')
+    const id = key('github-issue', 'github', REPO, '12')
     const url = 'https://github.com/acme/widgets/issues/12'
-    expect(h.receive.mock.calls[0]![0]).toEqual({ id, source: 'github', threads: [{ source: 'github', id: '12' }],
+    expect(h.receive.mock.calls[0]![0]).toEqual({ id, source: 'github', repositoryId: REPO, threads: [{ source: 'github', id: '12', repositoryId: REPO }],
       actor: { source: 'github', id: 'alice' }, human: true, at: '2026-09-09T00:00:00Z',
-      text: 'Login fails\n\n@agent-bot please fix the login', addressed: 'mention', channel: githubChannel(12, url), url,
+      text: 'Login fails\n\n@agent-bot please fix the login', addressed: 'mention', channel: githubChannel(githubRef, 12, url), url,
       meta: { number: 12, isPr: false, kind: 'issue' } })
     // An allowed sender's mention is an explicit request on that poll.
     expect(h.engine.candidate(id)?.strength).toBe('explicit')
@@ -855,8 +863,8 @@ describe('github source', () => {
     const comment: GithubComment = { id: 5, body: '@agent-bot can you take this?', user: { login: 'alice', type: 'User' },
       html_url: `${url}#issuecomment-5`, created_at: '2026-09-09T00:00:00Z', updated_at: '2026-09-09T00:00:00Z' }
     const { reads } = notify(h, [issue(12, { created_at: '2026-08-01T00:00:00Z' })], { 12: [comment] })
-    await pollRound(h)
-    const expected = commentTrigger(comment, { number: 12, isPr: false, url }, 'conversation', 'agent-bot')
+    await pollRound(h.github)
+    const expected = commentTrigger(comment, { number: 12, isPr: false, url }, 'conversation', 'agent-bot', githubRef)
     expect(h.receive.mock.calls.map(([trigger]) => trigger)).toEqual([expected])
     // An Issue has only its conversation; the comments are read since the notification cursor.
     const since = encodeURIComponent('2026-09-08T00:00:00.000Z')
@@ -867,35 +875,35 @@ describe('github source', () => {
     const h = host()
     // Opened just before the poll, the Issue is still after the cursor the next poll reads from.
     notify(h, [issue(12, { created_at: new Date(Date.now() - 1000).toISOString() })], {}, new Date(Date.now() - 60_000).toISOString())
-    await pollRound(h)
-    await pollRound(h)
+    await pollRound(h.github)
+    await pollRound(h.github)
     expect(h.receive).toHaveBeenCalledTimes(2)
-    expect(h.store.read.threadTriggers('github:12', 10).map(trigger => trigger.id)).toEqual([key('github-issue', '12')])
-    expect(h.store.decisions.byThread('github:12').map(decision => decision.triggerIds)).toEqual([[key('github-issue', '12')]])
+    expect(h.store.read.threadTriggers('github:12', 10).map(trigger => trigger.id)).toEqual([key('github-issue', 'github', REPO, '12')])
+    expect(h.store.decisions.byThread('github:12').map(decision => decision.triggerIds)).toEqual([[key('github-issue', 'github', REPO, '12')]])
     h.store.close()
   })
   it('takes in an Issue without a mention as a Trigger that is not addressed, and a bot\'s Issue as automated', async () => {
     const h = host()
     notify(h, [issue(12, { body: 'Login fails on Safari' }), issue(15, { user: { login: 'dependabot[bot]', type: 'Bot' } })])
-    await pollRound(h)
+    await pollRound(h.github)
     const taken = (number: number) => h.receive.mock.calls.map(([trigger]) => trigger).find(trigger => trigger.meta.number === number)
     const [plain, bot] = [taken(12), taken(15)]
-    expect(plain).toMatchObject({ id: key('github-issue', '12'), human: true })
+    expect(plain).toMatchObject({ id: key('github-issue', 'github', REPO, '12'), human: true })
     expect(plain).not.toHaveProperty('addressed')
-    expect(bot).toMatchObject({ id: key('github-issue', '15'), human: false })
+    expect(bot).toMatchObject({ id: key('github-issue', 'github', REPO, '15'), human: false })
     // The Issue's own read position moves past what this round read.
-    expect(Date.parse(h.store.get<string>('github-cursor:12')!)).toBeGreaterThan(Date.parse('2026-09-08T00:00:00.000Z'))
+    expect(Date.parse(h.store.get<string>(kv.cursor(12))!)).toBeGreaterThan(Date.parse('2026-09-08T00:00:00.000Z'))
     h.store.close()
   })
   it('keeps an Issue body the unclaimed-Issue Source stored before as the one Trigger of that body', async () => {
     const h = host()
-    const stored: Trigger = { id: key('github-issue', '12'), source: 'github-issue', threads: [{ source: 'github', id: '12' }],
+    const stored: Trigger = { id: key('github-issue', 'github', REPO, '12'), source: 'github', repositoryId: REPO, threads: [{ source: 'github', id: '12', repositoryId: REPO }],
       actor: { source: 'github', id: 'alice' },
       human: true, at: '2026-09-09T00:00:00Z', text: 'Login fails\n\n@agent-bot please fix the login', meta: { number: 12, isPr: false,
         eligibleAt: '' } }
     h.store.triggers.save(stored)
     notify(h, [issue(12, { body: '@agent-bot please fix the login' })])
-    await pollRound(h)
+    await pollRound(h.github)
     expect(await h.receive.mock.results[0]!.value).toBe('duplicate')
     expect(h.store.read.threadTriggers('github:12', 10)).toEqual([stored])
     h.store.close()
@@ -906,20 +914,20 @@ describe('github source', () => {
     const edited = issue(12, { created_at: '2026-08-01T00:00:00Z', updated_at: '2026-09-09T00:00:00Z',
       body: 'Login fails. @agent-bot can you look?' })
     notify(h, [edited])
-    await pollRound(h)
+    await pollRound(h.github)
     expect(h.receive).not.toHaveBeenCalled()
     h.store.close()
   })
   it('reads a PR that a notification names by its Issue address as the PR', async () => {
     const h = host()
-    h.store.set('github-since', '2026-09-08T00:00:00.000Z')
+    h.store.set(kv.since, '2026-09-08T00:00:00.000Z')
     const review = { id: 4, state: 'APPROVED', commit_id: 'abc', user: { login: 'carol', type: 'User' },
       submitted_at: '2026-09-09T00:00:00Z' }
     const reads = github(h, { notifications: [notification(9)], 'issues/9': { ...issue(9), pull_request: { url: 'x' } },
       'pulls/9/reviews': [review],
       'pulls/9': { title: 'Fix', state: 'open', html_url: 'https://github.com/acme/widgets/pull/9', user: { login: 'carol' },
         head: { sha: 'abc', ref: 'fix', repo: null } } })
-    await pollRound(h)
+    await pollRound(h.github)
     expect(bare(reads)).toEqual(['notifications', 'issues/9', 'pulls/9', 'issues/9/comments', 'pulls/9/comments', 'pulls/9/reviews'])
     expect(h.receive.mock.calls.map(([trigger]) => trigger)).toEqual([expect.objectContaining({ text: 'APPROVED review of commit abc',
       meta: expect.objectContaining({ isPr: true }) })])
@@ -931,41 +939,41 @@ describe('github source', () => {
       updated_at: '2026-09-09T00:00:00Z' }
     const { routes } = notify(h, [issue(12, { created_at: '2026-08-01T00:00:00Z' })], { 12: [comment] })
     routes['issues/12/comments'] = () => {
-      h.store.saveSettings({ ...h.store.settings(), sources: { ...h.store.settings().sources, github: { enabled: false, config: {} } } })
+      h.store.saveSettings({ ...h.store.settings(), sources: { ...h.store.settings().sources, github: { kind: 'github', enabled: false, config: {} } } })
       return [comment]
     }
-    await pollRound(h)
+    await pollRound(h.github)
     expect(h.receive).not.toHaveBeenCalled()
-    expect(h.store.get('github-cursor:12')).toBeUndefined()
-    expect(h.store.get('github-since')).toBe('2026-09-08T00:00:00.000Z')
+    expect(h.store.get(kv.cursor(12))).toBeUndefined()
+    expect(h.store.get(kv.since)).toBe('2026-09-08T00:00:00.000Z')
     h.store.close()
   })
   it('lets a ticket follow its source PR or the agent\'s PR from its branch, and refuses others', async () => {
     const h = host()
     const source = commentTrigger({ id: 1, body: '@agent-bot fix', user: { login: 'alice' },
-      html_url: 'https://github.com/acme/widgets/pull/30#issuecomment-1' }, { number: 30, isPr: true }, 'conversation', 'agent-bot')
+      html_url: 'https://github.com/acme/widgets/pull/30#issuecomment-1' }, { number: 30, isPr: true }, 'conversation', 'agent-bot', githubRef)
     h.store.triggers.save(source)
     h.store.tickets.save({ ...openTicket('t1'), execution: execution('fix-1'), origin: { triggerId: source.id, triggerIds: [source.id] } })
     h.store.tickets.save({ ...openTicket('t2'), execution: execution('other-2'), ...pulled(41) })
     const agents = (number: number, ref: string, repo = 'acme/widgets'): Pull => ({ ...openPull(number), user: { login: 'agent-bot' },
       head: { sha: 'abc', ref, repo: { full_name: repo } } })
-    expect(claimPull(h, 't1', agents(40, 'agent/fix-1', 'someone/fork'))).toContain('PR does not belong to this ticket')
-    expect(claimPull(h, 't1', { ...openPull(31), head: { sha: 'abc', ref: 'agent/fix-1',
+    expect(claimPull(h.github, 't1', agents(40, 'agent/fix-1', 'someone/fork'))).toContain('PR does not belong to this ticket')
+    expect(claimPull(h.github, 't1', { ...openPull(31), head: { sha: 'abc', ref: 'agent/fix-1',
       repo: { full_name: 'acme/widgets' } } })).toContain('PR does not belong to this ticket')
-    expect(claimPull(h, 't1', agents(41, 'agent/fix-1'))).toBe('PR already belongs to another active ticket')
+    expect(claimPull(h.github, 't1', agents(41, 'agent/fix-1'))).toBe('PR already belongs to another active ticket')
     // A PR that is not open is not bound, and that is no refusal.
-    expect(claimPull(h, 't1', { ...agents(42, 'agent/fix-1'), state: 'closed' })).toBeUndefined()
+    expect(claimPull(h.github, 't1', { ...agents(42, 'agent/fix-1'), state: 'closed' })).toBeUndefined()
     expect(pullOf(h.store.tickets.get('t1')!)).toBeUndefined()
-    expect(claimPull(h, 't1', openPull(30))).toBeUndefined()
-    expect(h.store.tickets.get('t1')!.follows).toEqual([{ thread: 'github:30', own: false }])
-    expect(claimPull(h, 't1', agents(43, 'agent/fix-1'))).toBeUndefined()
+    expect(claimPull(h.github, 't1', openPull(30))).toBeUndefined()
+    expect(h.store.tickets.get('t1')!.follows).toEqual([{ thread: 'github:30', own: false, repositoryId: REPO }])
+    expect(claimPull(h.github, 't1', agents(43, 'agent/fix-1'))).toBeUndefined()
     expect(h.store.tickets.get('t1')).toMatchObject({ follows: [{ thread: 'github:30', own: false }, { thread: 'github:43', own: true }], channels: [] })
     expect(pullOf(h.store.tickets.get('t1')!)).toBe(43)
     expect(h.store.threads.get('github:43')).toMatchObject({ subscriptions: ['t1'], meta: { isPr: true, prAuthor: 'agent-bot' } })
     // The PR the ticket started from is not one it opened: when its own PR merges, the ticket ends instead of following it.
-    expect(await observePull(h, endedPull(43, '2026-09-02T00:00:00Z'))).toBe(true)
+    expect(await observePull(h.github, endedPull(43, '2026-09-02T00:00:00Z'))).toBe(true)
     expect(h.store.tickets.get('t1')).toMatchObject({ ended: { outcome: 'merged' } })
-    expect(claimPull(h, 't1', openPull(30))).toBe('Ticket ended because its PR was closed')
+    expect(claimPull(h.github, 't1', openPull(30))).toBe('Ticket ended because its PR was closed')
     h.store.close()
   })
 })
@@ -984,7 +992,7 @@ describe('source context', () => {
     const h = host()
     const github = h.context(githubKind)
     github.report('github', { state: 'ready', detail: 'ok' })
-    expect(h.health.github).toEqual({ state: 'ready', detail: 'ok' })
+    expect(h.health['github:github']).toEqual({ state: 'ready', detail: 'ok' })
     expect(() => github.report('feishu', { state: 'error', detail: 'x' })).toThrow('no health entry feishu')
     h.store.close()
   })
@@ -1004,12 +1012,12 @@ describe('source context', () => {
   })
   it('reads the configuration of an instance that is on, removes a record set to undefined, and merges ticket meta', () => {
     const h = host()
-    expect(h.config('feishu')).toMatchObject({ directMessages: true })
-    h.store.saveSettings({ ...h.store.settings(), sources: { ...h.store.settings().sources, feishu: { enabled: false, config: {} } } })
-    expect(h.config('feishu')).toBeUndefined()
-    h.state.set('github-retry', { 1: {} })
-    h.state.set('github-retry', undefined)
-    expect(h.store.keys('github-retry')).toEqual([])
+    expect(h.config()).toMatchObject({ directMessages: true })
+    h.store.saveSettings({ ...h.store.settings(), sources: { ...h.store.settings().sources, feishu: { kind: 'feishu', enabled: false, config: {} } } })
+    expect(h.config()).toBeUndefined()
+    h.state.set(kv.retry, { 1: {} } as never)
+    h.state.set(kv.retry, undefined)
+    expect(h.store.keys(kv.retry)).toEqual([])
     h.store.tickets.save({ ...openTicket('t1'), execution: execution('one') })
     h.tickets.bindThread('t1', { source: 'github', id: '4' }, true)
     // The ticket follows the Thread; its other fields stay as they were.
@@ -1064,9 +1072,9 @@ describe('feishu event consumer', () => {
   /** The Feishu Source's context, on a fresh Store whose Feishu Source is on, with `cli` as the bot CLI. */
   function consumerSource(path: string, config: Record<string, unknown> = { chats: [] }) {
     const store = new Store(join(dir, 'db.sqlite'))
-    store.saveSettings(SettingsSchema.parse({ sources: { feishu: { enabled: true, config } } }))
+    store.saveSettings(SettingsSchema.parse({ sources: { feishu: { kind: 'feishu', enabled: true, config } } }))
     const board = new HealthBoard()
-    const sources = new SourceRegistry(() => store.settings(), board)
+    const sources = new SourceRegistry(() => store.settings(), board, undefined, sourceId => sourceId === 'github' ? testRepository : undefined)
     sources.register(feishuKind)
     const assessor: Assessor = { request: vi.fn(async () => {}) }
     const executor: Executor = { start: vi.fn(async () => {}), deliver: vi.fn(async () => {}), stop: vi.fn(async () => {}) }
@@ -1075,11 +1083,11 @@ describe('feishu event consumer', () => {
     const engine = new Engine({ repo: store, scope: sources, policy, assessor, executor, outbox })
     const deployment = testDeployment({ feishu: { ...testDeployment().feishu!, cli: path } })
     const health = board.all
-    const commands = new Commands(() => deployment, {}, controller.signal)
+    const commands = testCommands(() => deployment, {}, controller.signal)
     const deps: SourceContextDeps = { store, engine, outbox: { send: () => {} }, commands, sources, deployment, ready: Promise.resolve(), configured: () => true,
       receive: (trigger: Trigger) => engine.receive(trigger) }
-    const turnOff = () => store.saveSettings(SettingsSchema.parse({ sources: { feishu: { enabled: false, config: { chats: [] } } } }))
-    return { ctx: sourceContextOf(deps, feishuKind), health, store, turnOff }
+    const turnOff = () => store.saveSettings(SettingsSchema.parse({ sources: { feishu: { kind: 'feishu', enabled: false, config: { chats: [] } } } }))
+    return { ctx: sourceContextOf(deps, feishuKind, 'feishu'), health, store, turnOff }
   }
 
   /** A message event line as `event consume` prints it; a group message mentions the bot. */
@@ -1090,18 +1098,23 @@ describe('feishu event consumer', () => {
     writeFileSync(join(dir, 'events'), [event('om_1', 'oc_group', 'group'), event('om_2', 'oc_dm', 'p2p'), 'not json',
       event('om_3', 'oc_group', 'group')].join('\n') + '\n')
     const { ctx, health, store } = consumerSource(cli('events'))
+    // The consumer may report `ready` after a malformed line, so record every health report instead of its final state.
+    const reports: { state: string; detail: string }[] = []
+    const report = ctx.report
+    ctx.report = (entry, value) => { reports.push({ ...value }); report(entry, value) }
     running = runFeishu(ctx, controller.signal)
     await vi.waitFor(() => expect(store.triggers.get(feishuTriggerId('om_3'))).toBeDefined(), until)
     expect(['om_1', 'om_2'].map(id => store.triggers.get(feishuTriggerId(id))?.meta.direct)).toEqual([false, true])
     expect(store.get(KV.feishu.chats)).toEqual({ oc_group: false, oc_dm: true })
-    expect(health.feishu).toMatchObject({ state: 'error', detail: expect.stringContaining('JSON') })
+    expect(reports.some(item => item.state === 'error' && item.detail.includes('JSON'))).toBe(true)
+    expect(health['feishu:feishu']).toBeDefined()
     controller.abort(); await running; store.close()
   }, 20_000)
   it('drops the events it reads once the Source is off', async () => {
     writeFileSync(join(dir, 'events'), event('om_9', 'oc_group', 'group') + '\n')
     const { ctx, health, store, turnOff } = consumerSource(cli('late'))
     running = runFeishu(ctx, controller.signal)
-    await vi.waitFor(() => expect(health.feishu).toMatchObject({ state: 'ready' }), until)
+    await vi.waitFor(() => expect(health['feishu:feishu']).toMatchObject({ state: 'ready' }), until)
     turnOff()
     // The CLI prints the event a second after it is ready, before the consumer stops for the Source being off.
     await vi.waitFor(() => expect(existsSync(join(dir, 'printed'))).toBe(true), until)
@@ -1125,10 +1138,10 @@ describe('feishu event consumer', () => {
       })
       const stop = new AbortController()
       const loops = runFeishu(ctx, AbortSignal.any([stop.signal, controller.signal]))
-      await vi.waitFor(() => expect(['ready', 'error']).toContain(health.history?.state), until)
+      await vi.waitFor(() => expect(['ready', 'error']).toContain(health['history:feishu']?.state), until)
       stop.abort(); await loops; lark.mockRestore()
       const cursors = Object.fromEntries(['oc_a', 'oc_b', 'oc_dm'].map(chat => [chat, store.get(KV.feishu.history(chat))]))
-      const result = { chats, cursors, history: health.history }
+      const result = { chats, cursors, history: health['history:feishu'] }
       store.close(); rmSync(join(dir, 'db.sqlite'), { force: true }); rmSync(join(dir, 'db.sqlite-wal'), { force: true })
       rmSync(join(dir, 'db.sqlite-shm'), { force: true })
       return result
@@ -1150,7 +1163,7 @@ describe('feishu event consumer', () => {
     await vi.waitFor(() => expect(runs()).toBe(1), until)
     const pid = Number(readFileSync(join(dir, 'pid'), 'utf8'))
     await vi.advanceTimersByTimeAsync(45_000)
-    await vi.waitFor(() => expect(health.feishu).toMatchObject({ state: 'error',
+    await vi.waitFor(() => expect(health['feishu:feishu']).toMatchObject({ state: 'error',
       detail: expect.stringContaining('did not become ready within 45 seconds') }), until)
     expect(alive(pid)).toBe(false)
     controller.abort(); await running; store.close()
@@ -1158,18 +1171,18 @@ describe('feishu event consumer', () => {
   it('reports a warning the consumer prints as an error', async () => {
     const { ctx, health, store } = consumerSource(cli('warn'))
     running = runFeishu(ctx, controller.signal)
-    await vi.waitFor(() => expect(health.feishu).toMatchObject({ state: 'error', detail: 'WARN the connection was reset' }), until)
+    await vi.waitFor(() => expect(health['feishu:feishu']).toMatchObject({ state: 'error', detail: 'WARN the connection was reset' }), until)
     controller.abort(); await running; store.close()
   }, 20_000)
   it('stops the consumer within five seconds once the Source is off', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
     const { ctx, health, store, turnOff } = consumerSource(cli('ready'))
     running = runFeishu(ctx, controller.signal)
-    await vi.waitFor(() => expect(health.feishu).toMatchObject({ state: 'ready', detail: 'Listening for bot events' }), until)
+    await vi.waitFor(() => expect(health['feishu:feishu']).toMatchObject({ state: 'ready', detail: 'Listening for bot events' }), until)
     const pid = Number(readFileSync(join(dir, 'pid'), 'utf8'))
     turnOff()
     await vi.advanceTimersByTimeAsync(5000)
-    await vi.waitFor(() => expect(health.feishu).toMatchObject({ state: 'paused', code: 'sourceOff' }), until)
+    await vi.waitFor(() => expect(health['feishu:feishu']).toMatchObject({ state: 'paused', code: 'sourceOff' }), until)
     expect(alive(pid)).toBe(false)
     controller.abort(); await running; store.close()
   }, 20_000)
@@ -1177,10 +1190,10 @@ describe('feishu event consumer', () => {
     const { ctx, health, store } = consumerSource(cli('flaky'))
     running = runFeishu(ctx, controller.signal)
     const exited = { state: 'error', detail: expect.stringContaining('exited (1, ready=true)') }
-    await vi.waitFor(() => expect(health.feishu).toMatchObject(exited), until)
+    await vi.waitFor(() => expect(health['feishu:feishu']).toMatchObject(exited), until)
     // The first restart waits a second.
     await vi.waitFor(() => expect(runs()).toBe(2), until)
-    await vi.waitFor(() => expect(health.feishu).toMatchObject({ state: 'ready' }), until)
+    await vi.waitFor(() => expect(health['feishu:feishu']).toMatchObject({ state: 'ready' }), until)
     controller.abort(); await running; store.close()
   }, 20_000)
 })
@@ -1192,7 +1205,7 @@ describe('observing the GitHub repository', () => {
     body: 'details', state: 'open', created_at: at(0), updated_at: at(0),
     html_url: `https://github.com/acme/widgets/issues/${number}`, user: { login: 'carol', type: 'User' }, ...fields })
   const observe = (h: ReturnType<typeof host>, config: Record<string, boolean>) =>
-    h.store.saveSettings({ ...h.store.settings(), sources: { ...h.store.settings().sources, github: { enabled: true, config } } })
+    h.store.saveSettings({ ...h.store.settings(), sources: { ...h.store.settings().sources, github: { kind: 'github', enabled: true, config } } })
   /** GitHub as the repository's lists and its default branch answer; a request with the ETag of an unchanged list answers 304. */
   function repository(h: ReturnType<typeof host>, answers: { issues?: unknown[]; comments?: unknown[]; reviewComments?: unknown[];
     branch?: { sha: string; checks: unknown[] } }) {
@@ -1217,39 +1230,39 @@ describe('observing the GitHub repository', () => {
     async () => {
     const h = host()
     observe(h, { observeIssues: true, observePulls: true })
-    h.store.set('github-since', at(-24))
-    h.store.set('github-stream:issues', { since: at(0), started: { issues: at(0), pulls: at(0) } })
+    h.store.set(kv.since, at(-24))
+    h.store.set(kv.stream('issues'), { since: at(0), started: { issues: at(0), pulls: at(0) } })
     const calls = repository(h, { issues: [issue(3, { created_at: at(-24), updated_at: at(1) }),
       issue(4, { created_at: at(2), updated_at: at(2) }),
       { ...issue(5, { created_at: at(3), updated_at: at(3) }), pull_request: { url: 'x' } },
       issue(6, { created_at: at(4), updated_at: at(4), user: { login: 'agent-bot', type: 'User' } })] })
-    await pollRound(h)
+    await pollRound(h.github)
     // #3 was opened before the Source observed Issues, and #6 is the agent's own.
     expect(h.receive.mock.calls.map(([trigger]) => [trigger.meta.number, trigger.meta.kind, trigger.id]))
-      .toEqual([[4, 'issue', issueTrigger(issue(4), 'agent-bot').id], [5, 'pull', issueTrigger(issue(5), 'agent-bot').id]])
+      .toEqual([[4, 'issue', issueTrigger(issue(4), 'agent-bot', githubRef).id], [5, 'pull', issueTrigger(issue(5), 'agent-bot', githubRef).id]])
     const started = { issues: at(0), pulls: at(0) }
-    expect(h.store.get('github-stream:issues')).toEqual({ since: cursorAt(at(4)), started })
+    expect(h.store.get(kv.stream('issues'))).toEqual({ since: cursorAt(at(4)), started })
     const list = () => calls.filter(args => args[1]!.startsWith('repos/acme/widgets/issues?'))
     expect(list()[0]![1]).toContain(`since=${encodeURIComponent(at(0))}`)
     // The next round repeats the request at the newest Issue, whose ETag the round after sends, which GitHub answers 304 for.
-    await pollRound(h)
-    expect(h.store.get('github-stream:issues')).toEqual({ since: cursorAt(at(4)), started, etag: '"same"' })
+    await pollRound(h.github)
+    expect(h.store.get(kv.stream('issues'))).toEqual({ since: cursorAt(at(4)), started, etag: '"same"' })
     h.receive.mockClear()
-    await pollRound(h)
+    await pollRound(h.github)
     expect(list().at(-1)).toEqual(expect.arrayContaining(['-H', 'If-None-Match: "same"']))
     expect(h.receive).not.toHaveBeenCalled()
     // Switched off, the stream forgets where it was, so it starts afresh once switched on again.
     observe(h, {})
-    await pollRound(h)
-    expect(h.store.get('github-stream:issues')).toBeUndefined()
+    await pollRound(h.github)
+    expect(h.store.get(kv.stream('issues'))).toBeUndefined()
     h.store.close()
   })
   it('takes in the repository\'s conversation and review comments, on the Issue or PR each is on', async () => {
     const h = host()
     observe(h, { observeComments: true })
-    h.store.set('github-since', at(-24))
+    h.store.set(kv.since, at(-24))
     for (const stream of ['comments', 'review-comments']) {
-      h.store.set(`github-stream:${stream}`, { since: at(0), started: { comments: at(0) } })
+      h.store.set(kv.stream(stream), { since: at(0), started: { comments: at(0) } })
     }
     const comment = (id: number, fields: Record<string, unknown>) => ({ id, body: `comment ${id}`, user: { login: 'carol', type: 'User' },
       created_at: at(1), updated_at: at(1), ...fields })
@@ -1261,7 +1274,7 @@ describe('observing the GitHub repository', () => {
           user: { login: 'dependabot[bot]', type: 'Bot' } })],
       reviewComments: [comment(3, { pull_request_url: 'https://api.github.com/repos/acme/widgets/pulls/9', path: 'src/a.ts', line: 4,
         html_url: 'https://github.com/acme/widgets/pull/9#discussion_r3' })] })
-    await pollRound(h)
+    await pollRound(h.github)
     expect(h.receive.mock.calls.map(([trigger]) => [trigger.meta.number, trigger.meta.isPr, trigger.meta.kind, trigger.human]))
       .toEqual([[7, false, 'conversation', true], [9, true, 'conversation', false], [9, true, 'inline', true]])
     h.store.close()
@@ -1269,10 +1282,10 @@ describe('observing the GitHub repository', () => {
   it('fails the round for a stream whose read fails, keeps its cursor, and still reads the other streams', async () => {
     const h = host()
     observe(h, { observeIssues: true, observeComments: true })
-    h.store.set('github-since', at(-24))
+    h.store.set(kv.since, at(-24))
     const kind = (stream: string) => stream === 'issues' ? 'issues' : 'comments'
     for (const stream of ['issues', 'comments', 'review-comments']) {
-      h.store.set(`github-stream:${stream}`, { since: at(0), started: { [kind(stream)]: at(0) } })
+      h.store.set(kv.stream(stream), { since: at(0), started: { [kind(stream)]: at(0) } })
     }
     const comment = { id: 1, body: 'looks off', user: { login: 'carol', type: 'User' }, created_at: at(1), updated_at: at(1),
       issue_url: 'https://api.github.com/repos/acme/widgets/issues/7', html_url: 'https://github.com/acme/widgets/issues/7#issuecomment-1' }
@@ -1283,20 +1296,20 @@ describe('observing the GitHub repository', () => {
       if (args[1]!.startsWith('repos/acme/widgets/issues?')) throw refused(502, 'Bad Gateway')
       return answer(program, args)
     })
-    await expect(pollRound(h)).rejects.toThrow(/issues: .*502/)
-    expect(h.store.get('github-stream:issues')).toEqual({ since: at(0), started: { issues: at(0) } })
+    await expect(pollRound(h.github)).rejects.toThrow(/issues: .*502/)
+    expect(h.store.get(kv.stream('issues'))).toEqual({ since: at(0), started: { issues: at(0) } })
     expect(h.receive).toHaveBeenCalledWith(expect.objectContaining({ text: 'looks off' }))
-    expect(h.store.get('github-stream:comments')).toEqual({ since: cursorAt(at(1)), started: { comments: at(0) } })
+    expect(h.store.get(kv.stream('comments'))).toEqual({ since: cursorAt(at(1)), started: { comments: at(0) } })
     h.store.close()
   })
   it('reads a stream whose cursor is older than the polling horizon from the horizon, without the ETag of the older request', async () => {
     const h = host()
     observe(h, { observeIssues: true })
-    h.store.set('github-since', at(-24))
+    h.store.set(kv.since, at(-24))
     const old = new Date(Date.now() - 20 * 86_400_000).toISOString()
-    h.store.set('github-stream:issues', { since: old, started: { issues: old }, etag: '"same"' })
+    h.store.set(kv.stream('issues'), { since: old, started: { issues: old }, etag: '"same"' })
     const calls = repository(h, {})
-    await pollRound(h)
+    await pollRound(h.github)
     const list = calls.find(args => args[1]!.startsWith('repos/acme/widgets/issues?'))!
     expect(list).not.toContain('-H')
     const since = Date.parse(decodeURIComponent(/since=([^&]+)/.exec(list[1]!)![1]!))
@@ -1308,45 +1321,45 @@ describe('observing the GitHub repository', () => {
   it('starts the default branch\'s CI afresh when the default branch is renamed, without a Trigger', async () => {
     const h = host()
     observe(h, { observeCi: true })
-    h.store.set('github-since', at(-24))
-    h.store.set('github-branch-ci', { branch: 'master', failures: [], revision: 2 })
+    h.store.set(kv.since, at(-24))
+    h.store.set(kv.branchCi, { branch: 'master', failures: [], revision: 2 })
     const answers = { branch: { sha: 'ddd4444', checks: [{ name: 'lint', status: 'completed', conclusion: 'failure' }] } }
     repository(h, answers)
-    await pollRound(h)
+    await pollRound(h.github)
     expect(h.receive).not.toHaveBeenCalled()
-    expect(h.store.get('github-branch-ci')).toEqual({ branch: 'main', failures: ['lint'], revision: 2 })
+    expect(h.store.get(kv.branchCi)).toEqual({ branch: 'main', failures: ['lint'], revision: 2 })
     h.store.close()
   })
   it('takes in new PRs only from when their switch turned on, apart from when new Issues were', async () => {
     const h = host()
     observe(h, { observeIssues: true, observePulls: true })
-    h.store.set('github-since', at(-24))
+    h.store.set(kv.since, at(-24))
     // The stream took in Issues from hour 0; PRs were switched on only now.
-    h.store.set('github-stream:issues', { since: at(0), started: { issues: at(0) } })
+    h.store.set(kv.stream('issues'), { since: at(0), started: { issues: at(0) } })
     repository(h, { issues: [{ ...issue(5, { created_at: at(2), updated_at: at(2) }), pull_request: { url: 'x' } },
       issue(6, { created_at: at(3), updated_at: at(3) })] })
-    await pollRound(h)
+    await pollRound(h.github)
     expect(h.receive.mock.calls.map(([trigger]) => [trigger.meta.number, trigger.meta.kind])).toEqual([[6, 'issue']])
-    expect(h.store.get<{ started: Record<string, string> }>('github-stream:issues')!.started).toEqual({ issues: at(0), pulls: expect.any(String) })
+    expect(h.store.get<{ started: Record<string, string> }>(kv.stream('issues'))!.started).toEqual({ issues: at(0), pulls: expect.any(String) })
     // Switched off, a kind forgets its start.
     observe(h, { observePulls: true })
-    await pollRound(h)
-    expect(Object.keys(h.store.get<{ started: Record<string, string> }>('github-stream:issues')!.started)).toEqual(['pulls'])
+    await pollRound(h.github)
+    expect(Object.keys(h.store.get<{ started: Record<string, string> }>(kv.stream('issues'))!.started)).toEqual(['pulls'])
     h.store.close()
   })
   it('keeps a stream\'s cursor five seconds before its newest item, and a stale cursor on the hour, so the ETag is sent again', async () => {
     const h = host()
     observe(h, { observeIssues: true })
-    h.store.set('github-since', at(-24))
-    h.store.set('github-stream:issues', { since: at(0), started: { issues: at(0) } })
+    h.store.set(kv.since, at(-24))
+    h.store.set(kv.stream('issues'), { since: at(0), started: { issues: at(0) } })
     repository(h, { issues: [issue(6, { created_at: at(3), updated_at: at(3) })] })
-    await pollRound(h)
-    expect(h.store.get<{ since: string }>('github-stream:issues')!.since).toBe(new Date(Date.parse(at(3)) - 5000).toISOString())
+    await pollRound(h.github)
+    expect(h.store.get<{ since: string }>(kv.stream('issues'))!.since).toBe(new Date(Date.parse(at(3)) - 5000).toISOString())
     // A cursor behind the horizon reads from the horizon on the hour, the same in the next round, which sends the ETag.
     const old = new Date(Date.now() - 20 * 86_400_000).toISOString()
-    h.store.set('github-stream:issues', { since: old, started: { issues: old } })
+    h.store.set(kv.stream('issues'), { since: old, started: { issues: old } })
     const calls = repository(h, {})
-    await pollRound(h); await pollRound(h)
+    await pollRound(h.github); await pollRound(h.github)
     const lists = calls.filter(args => args[1]!.startsWith('repos/acme/widgets/issues?'))
     const since = (args: string[]) => decodeURIComponent(/since=([^&]+)/.exec(args[1]!)![1]!)
     expect(since(lists[0]!)).toBe(since(lists[1]!))
@@ -1357,47 +1370,47 @@ describe('observing the GitHub repository', () => {
   it('gives each change of the default branch\'s CI its own id, also when one commit fails, passes and fails again', async () => {
     const h = host()
     observe(h, { observeCi: true })
-    h.store.set('github-since', at(-24))
+    h.store.set(kv.since, at(-24))
     const check = (name: string, conclusion: string) => ({ name, status: 'completed', conclusion })
     const answers = { branch: { sha: 'eee5555', checks: [check('lint', 'success')] } }
     repository(h, answers)
-    await pollRound(h)
+    await pollRound(h.github)
     for (const conclusion of ['failure', 'success', 'failure']) {
       answers.branch = { sha: 'eee5555', checks: [check('lint', conclusion)] }
-      await pollRound(h)
+      await pollRound(h.github)
     }
     const ids = h.receive.mock.calls.map(([trigger]) => trigger.id)
     expect(ids).toHaveLength(3)
     expect(new Set(ids).size).toBe(3)
     // Switched off and on again, the CI starts from a new first look, and its ids keep counting.
     observe(h, {})
-    await pollRound(h)
+    await pollRound(h.github)
     observe(h, { observeCi: true })
-    await pollRound(h)
+    await pollRound(h.github)
     answers.branch = { sha: 'eee5555', checks: [check('lint', 'success')] }
-    await pollRound(h)
+    await pollRound(h.github)
     expect(new Set(h.receive.mock.calls.map(([trigger]) => trigger.id)).size).toBe(4)
     h.store.close()
   })
   it('tells of the default branch\'s CI when its failed checks change and once it passes again, after a first look', async () => {
     const h = host()
     observe(h, { observeCi: true })
-    h.store.set('github-since', at(-24))
+    h.store.set(kv.since, at(-24))
     const check = (name: string, conclusion: string | null) => ({ name, status: conclusion ? 'completed' : 'in_progress', conclusion })
     const answers = { branch: { sha: 'aaa1111', checks: [check('lint', 'success'), check('e2e', 'success')] } }
     repository(h, answers)
     const texts = () => h.receive.mock.calls.map(([trigger]) => trigger.text.split('\n')[0])
-    await pollRound(h)
+    await pollRound(h.github)
     expect(texts()).toEqual([])
     answers.branch = { sha: 'bbb2222', checks: [check('lint', 'failure'), check('e2e', null)] }
-    await pollRound(h)
+    await pollRound(h.github)
     answers.branch = { sha: 'bbb2222', checks: [check('lint', 'failure'), check('e2e', 'success')] }
-    await pollRound(h)
+    await pollRound(h.github)
     // A rerun that still runs is no recovery yet; the recovery is told once every check passes.
     answers.branch = { sha: 'ccc3333', checks: [check('lint', null), check('e2e', null)] }
-    await pollRound(h)
+    await pollRound(h.github)
     answers.branch = { sha: 'ccc3333', checks: [check('lint', 'success'), check('e2e', 'success')] }
-    await pollRound(h)
+    await pollRound(h.github)
     expect(texts()).toEqual(['CI failed 1/2 on main at bbb2222: lint; 1 still running', 'CI passed 2/2 on main at ccc3333'])
     expect(h.receive.mock.calls[0]![0]).toMatchObject({ human: false, actor: { id: '' }, threads: [{ source: 'github', id: 'ci:main' }],
       meta: { ci: true, branch: 'main', sha: 'bbb2222' }, url: 'https://github.com/acme/widgets/commit/bbb2222' })
