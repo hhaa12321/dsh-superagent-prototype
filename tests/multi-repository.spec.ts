@@ -432,4 +432,3 @@ describe('two-repository persistence helpers', () => {
     store.close()
   })
 })
-
