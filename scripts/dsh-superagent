@@ -39,6 +39,27 @@ def stopped(profile):
     return (control(profile) / 'manually-stopped').exists()
 
 
+def executes_dsh(args):
+    """Return whether arguments start with the DSH CLI, or with Node that runs the DSH CLI before any option.
+
+    Linux reports `ucomm=MainThread` for a live Node process, so the executable arguments identify the service;
+    requiring them to name the CLI keeps a process that merely mentions `--profile` from counting.
+    """
+    names = [word.rsplit('/', 1)[-1] for word in args]
+    if not names:
+        return False
+    if names[0] == 'dsh':
+        return True
+    if names[0] != 'node':
+        return False
+    for name in names[1:]:
+        if name.startswith('-'):
+            break
+        if name == 'dsh':
+            return True
+    return False
+
+
 def serves(args, profile):
     """Return whether command-line arguments belong to the main DSH service process for `profile`."""
     words, matched, value = [], False, False
@@ -54,8 +75,13 @@ def serves(args, profile):
     return matched and 'plugin' not in words
 
 
+def service(args, profile):
+    """Return whether `ps` arguments name the main DSH service process for `profile`, whatever its thread name."""
+    return executes_dsh(args) and serves(args, profile)
+
+
 def ps(*options, check=False):
-    """Yield `(pid, comm, args)` tuples from `ps`; arguments are split on whitespace, so paths with spaces become several words and only `--profile` and subcommands are inspected."""
+    """Yield `(pid, comm, args)` tuples from `ps`; arguments are split on whitespace, so paths with spaces become several words and only the executable, `--profile` and subcommands are inspected."""
     result = subprocess.run(['ps', '-ww', *options, '-o', 'pid=,ucomm=,args='], check=check, capture_output=True, text=True)
     for line in result.stdout.splitlines():
         parts = line.split(None, 2)
@@ -65,12 +91,12 @@ def ps(*options, check=False):
 
 def running(pid, profile):
     """Return whether `pid` is currently running the DSH service for `profile` (`ps -p` returns nothing once exited)."""
-    return any(found == pid and name in ('node', 'dsh') and serves(args, profile) for found, name, args in ps('-p', str(pid)))
+    return any(found == pid and service(args, profile) for found, _, args in ps('-p', str(pid)))
 
 
 def processes(profile):
     """Return PIDs of all running DSH service processes for `profile`, including instances started outside this script and the recorded `service.pid` while still running."""
-    found = [pid for pid, name, args in ps('-ax', check=True) if name in ('node', 'dsh') and serves(args, profile)]
+    found = [pid for pid, _, args in ps('-ax', check=True) if service(args, profile)]
     try:
         pid = int((control(profile) / 'service.pid').read_text())
     except (OSError, ValueError):
