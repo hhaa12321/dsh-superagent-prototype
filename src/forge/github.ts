@@ -1,13 +1,13 @@
 /**
  * GitHub behind the forge capability boundary: repository resolution and identity/access through the agent's GitHub CLI,
- * and Issue, comment, and pull-request reads through the same CLI, scoped to one RepositoryBinding.
+ * and Issue, comment, and pull-request reads and writes through the same CLI, scoped to one RepositoryBinding.
  */
 import { z } from 'zod'
 import { GithubAccountsSchema } from './config.ts'
 import type { RepositoryBinding } from '../repository.ts'
 import { SetupError } from '../setup.ts'
-import type { ForgeAdapter, ForgeActor, ForgeComment, ForgeIssue, ForgePage, ForgePull, ForgeReadContext, ForgeReadQuery, ForgeResolveInput,
-  ForgeResolution, ForgeSetupEnvironment } from './ports.ts'
+import type { ForgeAdapter, ForgeActor, ForgeComment, ForgeIssue, ForgePage, ForgePull, ForgePullInput, ForgeReadContext, ForgeReadQuery,
+  ForgeResolveInput, ForgeResolution, ForgeSetupEnvironment } from './ports.ts'
 import type { ForgeCapabilities } from './capabilities.ts'
 
 const GITHUB_CAPABILITIES: ForgeCapabilities = {
@@ -37,7 +37,9 @@ const GithubCommentSchema = z.looseObject({
 const GithubPullSchema = z.looseObject({
   id: z.number(), number: z.number().int().positive(), title: z.string(), body: z.string().nullish(), state: z.string(),
   user: GithubUserSchema, created_at: z.string(), updated_at: z.string(), merged_at: z.string().nullish(), closed_at: z.string().nullish(),
-  html_url: z.string().url(), head: z.looseObject({ ref: z.string(), sha: z.string() }), base: z.looseObject({ ref: z.string() }),
+  html_url: z.string().url(), head: z.looseObject({ ref: z.string(), sha: z.string(),
+    repo: z.looseObject({ id: z.number().nullish(), full_name: z.string().nullish() }).nullish() }), base: z.looseObject({ ref: z.string(),
+    repo: z.looseObject({ id: z.number().nullish(), full_name: z.string().nullish() }).nullish() }),
 })
 
 const actor = (user: { login: string; id?: number | undefined; type?: string | undefined }): ForgeActor => ({
@@ -51,6 +53,11 @@ const sinceQuery = (since: string | undefined): string => since ? `&since=${enco
 export const githubForgeAdapter: ForgeAdapter = {
   provider: 'github',
   capabilities: GITHUB_CAPABILITIES,
+  gitHost: 'github.com',
+  // Existing GitHub workspaces, cursors, and pull-request Threads use the display number, which GitHub keeps immutable
+  // across Issues and pull requests.
+  pullThreadId: pull => pull.displayNumber,
+  readContext({ commands }) { return { commands } },
   presentation: {
     issueUrl: (repository, number) => `${repository.webUrl}/issues/${number}`,
     pullUrl: (repository, number) => `${repository.webUrl}/pull/${number}`,
@@ -91,10 +98,16 @@ export const githubForgeAdapter: ForgeAdapter = {
     const commands = required(context.commands, 'GitHub')
     return mapIssue(await commands.api(GithubIssueSchema, `issues/${encodeURIComponent(displayNumber)}`))
   },
-  async listComments(binding: RepositoryBinding, issue: ForgeIssue, query: ForgeReadQuery, context: ForgeReadContext): Promise<ForgePage<ForgeComment>> {
+  async listComments(binding: RepositoryBinding, issue: Pick<ForgeIssue, 'displayNumber'>, query: ForgeReadQuery, context: ForgeReadContext): Promise<ForgePage<ForgeComment>> {
     const commands = required(context.commands, 'GitHub')
     const items = await commands.pages(GithubCommentSchema, `issues/${encodeURIComponent(issue.displayNumber)}/comments?per_page=${limit(query)}${sinceQuery(query.since)}`)
     return { items: items.map(comment => mapComment(comment)) }
+  },
+  async createComment(binding: RepositoryBinding, issue: Pick<ForgeIssue, 'displayNumber'>, body: string, context: ForgeReadContext):
+    Promise<ForgeComment> {
+    const commands = required(context.commands, 'GitHub')
+    return mapComment(await commands.api(GithubCommentSchema, `issues/${encodeURIComponent(issue.displayNumber)}/comments`,
+      '--method', 'POST', '-f', `body=${body}`))
   },
   async listPulls(binding: RepositoryBinding, query: ForgeReadQuery, context: ForgeReadContext): Promise<ForgePage<ForgePull>> {
     const commands = required(context.commands, 'GitHub')
@@ -104,6 +117,17 @@ export const githubForgeAdapter: ForgeAdapter = {
   async readPull(binding: RepositoryBinding, displayNumber: string, context: ForgeReadContext): Promise<ForgePull> {
     const commands = required(context.commands, 'GitHub')
     return mapPull(await commands.api(GithubPullSchema, `pulls/${encodeURIComponent(displayNumber)}`))
+  },
+  async createPull(binding: RepositoryBinding, input: ForgePullInput, context: ForgeReadContext): Promise<ForgePull> {
+    const commands = required(context.commands, 'GitHub')
+    return mapPull(await commands.api(GithubPullSchema, 'pulls', '--method', 'POST', '-f', `title=${input.title}`, '-f',
+      `head=${input.head}`, '-f', `base=${input.base}`, '-f', `body=${input.body}`))
+  },
+  async listPullComments(binding: RepositoryBinding, pull: ForgePull, query: ForgeReadQuery, context: ForgeReadContext):
+    Promise<ForgePage<ForgeComment>> {
+    const commands = required(context.commands, 'GitHub')
+    const items = await commands.pages(GithubCommentSchema, `issues/${encodeURIComponent(pull.displayNumber)}/comments?per_page=${limit(query)}${sinceQuery(query.since)}`)
+    return { items: items.map(comment => mapComment(comment)) }
   },
 }
 
@@ -132,5 +156,8 @@ const mapPull = (pull: z.infer<typeof GithubPullSchema>): ForgePull => ({
   nativeId: String(pull.id), displayNumber: String(pull.number), title: pull.title, body: pull.body ?? '',
   state: pull.merged_at ? 'merged' : pull.state === 'closed' ? 'closed' : 'open', author: actor(pull.user),
   createdAt: pull.created_at, updatedAt: pull.updated_at, ...pull.merged_at ? { mergedAt: pull.merged_at } : {}, ...pull.closed_at ? { closedAt: pull.closed_at } : {},
-  webUrl: pull.html_url, head: { ref: pull.head.ref, sha: pull.head.sha }, base: { ref: pull.base.ref },
+  webUrl: pull.html_url, head: { ref: pull.head.ref, sha: pull.head.sha, ...pull.head.repo?.id ? { repositoryId: String(pull.head.repo.id) } : {},
+    ...pull.head.repo?.full_name ? { repositorySlug: pull.head.repo.full_name } : {} },
+  base: { ref: pull.base.ref, ...pull.base.repo?.id ? { repositoryId: String(pull.base.repo.id) } : {},
+    ...pull.base.repo?.full_name ? { repositorySlug: pull.base.repo.full_name } : {} },
 })

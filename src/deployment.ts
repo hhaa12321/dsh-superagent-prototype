@@ -59,7 +59,7 @@ export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { githu
 /** One resolved GitHub CLI identity; `credentialId` of a binding names one of these entries. */
 export interface GithubCredential { cli: string; login: string; noreply: string }
 /** One resolved Gitee identity and the environment variable that holds its token; the token itself is never stored here. */
-export interface GiteeCredential { tokenEnv: string; login: string; userId: string }
+export interface GiteeCredential { tokenEnv: string; login: string; userId: string; commitEmail?: string }
 /** Built-in forge adapters; setup resolves every repository-bound Source through its provider's adapter. */
 export const FORGE_ADAPTERS = new ForgeRegistry([githubForgeAdapter, giteeForgeAdapter])
 export interface Deployment extends Machine {
@@ -157,10 +157,11 @@ export async function resolveDeployment(machine: Machine, sources: readonly Forg
         noreply: resolution.credential.commitEmail ?? `${resolution.identity.providerUserId}+${resolution.identity.login}@users.noreply.github.com` }
     } else if (provider === 'gitee') {
       giteeCredentials[credentialId] = { tokenEnv: resolution.credential.reference, login: resolution.identity.login,
-        userId: resolution.identity.providerUserId }
+        userId: resolution.identity.providerUserId, ...resolution.credential.commitEmail ? { commitEmail: resolution.credential.commitEmail } : {} }
     }
     repositories.push({ id, provider, providerRepositoryId: resolution.repository.providerRepositoryId, slug: resolution.repository.slug,
-      webUrl: resolution.repository.webUrl, credentialId, capabilities: resolution.capabilities, enabled: source.enabled })
+      webUrl: resolution.repository.webUrl, ...resolution.repository.defaultBranch ? { defaultBranch: resolution.repository.defaultBranch } : {},
+      credentialId, capabilities: resolution.capabilities, enabled: source.enabled })
   }
   if (!repositoryBound) throw new SetupError('repositoryUnset')
   const failed = Object.keys(sourceProblems)

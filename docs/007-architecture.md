@@ -249,7 +249,7 @@ Each model request binds the Session to the current prompt revision. The revisio
 | `src/app/tools/main.ts`, `src/app/tools/executor.ts` | Tool arguments of the main Session and the Executor Sessions into calls of the core classes, and their results into cards |
 | `src/app/http.ts`, `src/app/views/`, `src/app/api.ts` | HTTP requests into calls, and Store reads into the panel's views; `api.ts` types every route for the panel |
 | `src/app/resources.ts`, `src/app/links.ts`, `src/app/cards.ts` | Resource names into reads, source messages into links, records into compact cards for models |
-| `src/sources/github*.ts`, `src/sources/feishu*.ts`, `src/sources/poll.ts` | GitHub and Feishu payloads into Triggers and Thread facts, and messages into CLI calls |
+| `src/sources/github*.ts`, `src/sources/gitee.ts`, `src/sources/feishu*.ts`, `src/sources/poll.ts` | GitHub, Gitee, and Feishu payloads into Triggers and Thread facts, and messages into provider calls |
 | `src/deployment.ts`, `src/setup.ts`, `src/infra/` | Setup probes and problems, CLI transport, the agent's process environment |
 
 ## Dependency rules
@@ -280,10 +280,10 @@ Some generic modules still refer directly to GitHub or Feishu:
 - `src/app/links.ts` resolves Feishu message links and `repliedTo`. It and Runtime read settings with `feishuSettings`.
 - `src/app/resources.ts` reads the `feishu/` and `github/` originals; `src/app/cards.ts` uses `pullOf` for Ticket cards.
 - Runtime sends `pullEndNotices` for merged or closed Tickets.
-- Executor tools bind reported pull requests with `readPull` and `claimPull`, using the GitHub context exposed by Runtime.
+- Executor tools resolve a reported pull request through the ticket binding's forge adapter, using the provider-neutral `src/forge/pulls.ts` claim rules; Runtime no longer supplies a GitHub-only context.
 - MasterAssessor reads repository files with `readRepositoryPath`.
-- Sessions and Prompts register built-in skills only for GitHub and Feishu. Migration converts their schema-10 records.
-- Setup probes only GitHub and Feishu account fields (`SETUP_FIELDS`). Only those Sources receive account setup problems through `SourceContext.problem`.
+- Sessions and Prompts register built-in skills for GitHub, Gitee, and Feishu. Migration converts their schema-10 records.
+- Setup probes the forge and Feishu account fields (`SETUP_FIELDS`); each forge Source receives its own setup problem through `SourceContext.problem`.
 
 
 ## Modules
@@ -335,7 +335,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/retry-health.ts` | `RetryHealth`: which Sessions wait on a model budget retry, for the `models` health entry |
 | `src/app/role-models.ts` | Resolves the Eval and Executor models, and seeds a new Session with its role's model |
 | `src/app/assessment.ts` | The MasterAssessor, the assessment schema and the window `orchestrator_eval` answers |
-| `src/app/shell-environment.ts` | The DSH shell-env contributor: resolves a worker Session (or its subagent) to its Ticket and injects `DSH_SUPERAGENT_GITHUB_REPOSITORY` per shell command, which the `gh` shim and git credential helper enforce |
+| `src/app/shell-environment.ts` | The DSH shell-env contributor: resolves a worker Session (or its subagent) to its Ticket and injects the provider-neutral repository facts and the GitHub aliases per shell command, which the `gh` shim and git credential helpers enforce |
 | `src/app/execution-environment.ts` | The execution environment: its variables, a Ticket's values, the directory root and the lines of the prompt section, which `src/app/prompts.ts` fills into its template |
 | `src/app/source-context.ts` | `sourceContextOf`: each Source kind's `SourceContext` |
 | `src/app/links.ts` | `sourceLink`, the page of a Trigger's message, and `candidateCard` |
@@ -362,18 +362,21 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/infra/health.ts` | The `HealthBoard`, every part's health entry, each claimed by its one writer |
 | `src/forge/capabilities.ts` | The capability facts a forge adapter reports, their schema on a RepositoryBinding, and the supported/unsupported query the panel uses; `execution` says whether the provider's complete write path lets a Ticket run |
 | `src/forge/config.ts` | The setup-read Source configuration of each forge: a GitHub repository and CLI, and a Gitee repository and token environment variable name |
-| `src/forge/ports.ts` | The capability boundary: repository resolution and identity/access, Issue/comment reads, pull-request reads, and presentation; provider-neutral records keep native IDs apart from display numbers |
+| `src/forge/ports.ts` | The capability boundary: repository resolution and identity/access, Issue/comment reads and writes, pull-request reads, creation and comment reads, per-call context, and presentation; provider-neutral records keep native IDs apart from display numbers |
 | `src/forge/registry.ts` | `ForgeRegistry`, one built-in adapter per provider |
-| `src/forge/github.ts` | The GitHub adapter: repository resolution and identity/access through the agent's `gh`, and Issue, comment, and pull-request reads through the binding's `Commands` |
-| `src/forge/gitee.ts` | The Gitee API v5 adapter: `fetch` with the token in an Authorization header, `AbortSignal`, `URL`, `zod` response validation, page cursors, and honest read-only capabilities |
+| `src/forge/github.ts` | The GitHub adapter: repository resolution and identity/access through the agent's `gh`, and Issue, comment, and pull-request reads and writes through the binding's `Commands` |
+| `src/forge/gitee.ts` | The Gitee API v5 adapter: `fetch` with the token in an Authorization header, `AbortSignal`, `URL`, `zod` response validation, page cursors, Issue and PR comment writes, PR creation and comment reads, and honest capabilities |
+| `src/forge/gitee-credential.ts` | The binding-scoped Gitee Git credential broker and the helper files Git runs: the helper names only its binding and repository, the broker reads the token from the host process, and neither writes nor logs it |
+| `src/forge/pulls.ts` | Provider-neutral pull-request resolution and claim rules shared by worker tools and Sources: native-ID lookup, the source-PR and agent-branch checks, cross-repository and cross-ticket refusal, and the followed Thread's native identity |
 | `src/sources/kind.ts` | The `SourceKind` protocol |
 | `src/sources/registry.ts` | `SourceRegistry` |
 | `src/sources/host.ts` | `SourceHost`, `SourceContext`, `Health`, `health` and the fixed health texts |
 | `src/sources/poll.ts` | What GitHub, Gitee, and Feishu polling share: `POLL_HORIZON_MS`, `polled`, `cursorAt`, `pollFailure`, and `pollThreads`, which keeps a failure on its Thread as `pollError` |
-| `src/sources/gitee.ts` | The Gitee kind and plugin entry, exported as `./gitee-watch`: reads one bound repository's Issues, their comments, and new pull requests through the Gitee adapter into repository-scoped Triggers and Threads, keyed by native Issue ID and comment ID; read path only |
+| `src/sources/gitee.ts` | The Gitee kind and plugin entry, exported as `./gitee-watch`: reads one bound repository's Issues, their comments, and new pull requests into repository-scoped Triggers and Threads, and observes the pull requests open Tickets claim for comments, merge, and close, keyed by native Issue, comment, and PR IDs |
+| `src/sources/gitee-channel.ts` | The Gitee Channel: acknowledgement, answer, and result comments on an Issue or pull request, with a marker that makes an Outbox retry or restart post once |
 | `src/sources/github.ts` | The GitHub kind and plugin entry, exported as `./github-watch`: a poll round of notifications, the pull requests of open Tickets with their CI, and subscribed Threads; while the binding is off, only the open Tickets' pull requests and subscribed Threads |
 | `src/sources/github-trigger.ts` | GitHub comments, reviews, Issue bodies and CI changes as Triggers, and GitHub addresses |
-| `src/sources/github-pull.ts` | The pull request rules: which pull requests a Ticket follows (`claimPull`, `observePull`), the closes it reports to the Engine, and `pullEndNotices`, the chat notice of a Ticket that ended merged or closed |
+| `src/sources/github-pull.ts` | The GitHub pull request rules: `observePull`, the closes it reports to the Engine, `pullEndNotices`, and the GitHub binding of the shared `claimPull` |
 | `src/sources/github-channel.ts` | The GitHub Channel: comments and review thread replies, `sent` or `gone` |
 | `src/sources/github-read.ts` | CI snapshots, repository reads, the `github/` resources, and `githubThreadContext`: an Issue's or pull request's conversation by page |
 | `src/sources/feishu.ts` | The Feishu kind and plugin entry, exported as `./feishu-watch` |
@@ -410,11 +413,11 @@ Some generic modules still refer directly to GitHub or Feishu:
 
 ### Forge adapters
 
-`src/forge/` is the boundary between the domain and a provider's protocol. A `RepositoryBinding` names its `provider`; setup asks that provider's adapter to resolve the configured slug into the immutable repository ID, authenticate the account its credential reference names, verify push access, and report capability facts, which are persisted with the binding. Reads go through narrow ports (`listIssues`, `readIssue`, `listComments`, `listPulls`, `readPull`) whose records keep every native identity: Gitee's numeric Issue `id` is the Thread identity while its string `number` is display metadata, a pull request keeps its numeric `id` apart from its display `number`, and a comment is identified by its native ID. Unsupported operations, such as Gitee reviews and CI, are reported as capability facts instead of failing a generic read.
+`src/forge/` is the boundary between the domain and a provider's protocol. A `RepositoryBinding` names its `provider`; setup asks that provider's adapter to resolve the configured slug into the immutable repository ID, authenticate the account its credential reference names, verify push access, and report capability facts, which are persisted with the binding. Reads and the writes this slice needs go through narrow ports (`listIssues`, `readIssue`, `listComments`, `createComment`, `listPulls`, `readPull`, `createPull`, `listPullComments`) whose records keep every native identity: Gitee's numeric Issue `id` is the Thread identity while its string `number` is display metadata, a pull request keeps its numeric `id` apart from its display `number`, and a comment is identified by its native ID. Unsupported operations, such as Gitee reviews and CI, are reported as capability facts instead of failing a generic read. A pull-request Thread carries the provider's immutable PR ID through `pullThreadId`; Gitee uses `pull:<native ID>` while GitHub keeps its existing display-number Threads.
 
-The `execution` capability gates acceptance provider-neutrally: `EngineOptions.executionAllowed` reads the target binding's capability, and an accept for a binding that reports `false` is recorded as an `ignore` decision with `executionUnsupported`, so no Ticket or runnable Assignment exists. Gitee reports `false` in Phase 3; Phase 4 flips its adapter to `true` once the complete write path exists.
+The `execution` capability gates acceptance provider-neutrally: `EngineOptions.executionAllowed` reads the target binding's capability, and an accept for a binding that reports `false` is recorded as an `ignore` decision with `executionUnsupported`, so no Ticket or runnable Assignment exists. Phase 3 reported Gitee as `false`; Phase 4 implements the complete write path and reports `true`.
 
-The two built-in adapters do not share a provider-shaped API. GitHub reads through the binding's `Commands` (the agent's `gh`); Gitee reads over HTTP with Node's `fetch`, the token from the credential reference's environment variable in an `Authorization` header, `AbortSignal`, `URL`, and `zod` validation at the boundary. The Gitee token is never placed in a URL, persisted, logged, or passed to workers.
+The two built-in adapters do not share a provider-shaped API. GitHub reads and writes through the binding's `Commands` (the agent's `gh`); Gitee uses HTTP with Node's `fetch`, the token from the credential reference's environment variable in an `Authorization` header, `AbortSignal`, `URL`, and `zod` validation at the boundary. Git for a Gitee binding uses a generated helper that contains no secret and asks a host broker over a private Unix socket; the token is never placed in a URL, argument, prompt, generated credential file, SQLite row, log, or ordinary worker environment variable.
 
 ## Tests
 
@@ -425,9 +428,10 @@ The two built-in adapters do not share a provider-shaped API. GitHub reads throu
 | `tests/policy.spec.ts` | Source scope, the gate, the admission table, Mandate revalidation, the Policy version and assessment outcomes |
 | `tests/registry.spec.ts` | `SourceRegistry`: instances, validation, Policy parts, Channels and Thread context |
 | `tests/sources.spec.ts` | The Feishu and GitHub Sources on a `SourceContext`: translation, polls and read positions, the pull request rules, health |
-| `tests/forge-contract.spec.ts` | The forge capability boundary against a fake forge and the recorded Gitee API v5 shapes: repository/identity/access, Issue list/detail, comments, PR list/read, pagination, honest capabilities, and sanitized failures |
+| `tests/forge-contract.spec.ts` | The forge capability boundary against a fake forge and the recorded Gitee API v5 shapes: repository/identity/access, Issue list/detail, comment reads and writes, PR list/read/create and comment reads, pagination, honest capabilities, and sanitized failures |
 | `tests/gitee-source.spec.ts` | The Gitee Source: canary Issue and comment ingestion into repository-scoped Triggers and Threads, native-ID dedupe across polls and a restart, colliding display numbers in two bindings, PR reads, binding-scoped health and accounts, a partial setup failure, and a Gitee-only deployment |
-| `tests/gitee-live.spec.ts` | Opt-in live Gitee smoke against the prepared canary: authenticated identity and push access, Issue, comment, and pull reads, and two polls without a duplicate Trigger; the token is read from `GITEE_LIVE_TOKEN_FILE`, never printed or persisted, and the file is skipped without it |
+| `tests/gitee-execution.spec.ts` | The Gitee execution slice on a fake API: a human Issue becomes a Ticket, the worker creates and claims a PR by native ID, the result comment is idempotent across a restart, the claimed PR's comments and merge reach the correct Ticket, cross-binding and cross-account claims are refused, and the credential helper/broker never exposes the token |
+| `tests/gitee-live.spec.ts` | Opt-in live Gitee read smoke against the prepared canary: authenticated identity and push access, Issue, comment, and pull reads, and two polls without a duplicate Trigger; the token is read from `GITEE_LIVE_TOKEN_FILE`, never printed or persisted, and the file is skipped without it |
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
 | `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
 | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |

@@ -15,7 +15,7 @@ function harness() {
     channels: [], assignments: [], inputs: [], undelivered: [], createdAt: '1', updatedAt: '1', origin: { triggerId: 'issue-12', triggerIds: ['issue-12'] },
     execution: { name: 'fix', directory: '/work/github:101/fix', assignment: '' } }
   const host = { ctx, ticketOfSession: (id: string) => id === 'worker-ticket-a' ? ticket : undefined,
-    repositoryOf: () => testRepository, credentialOf: () => ({ login: 'agent-bot', noreply: '7+agent-bot@users.noreply.github.com' }),
+    repositoryOf: () => testRepository, credentialOf: () => ({ login: 'agent-bot', commitEmail: '7+agent-bot@users.noreply.github.com' }),
     triggerOf: () => ({ repositoryId: testRepository.id, meta: { number: 12, isPr: false } }) }
   const dispose = registerShellEnvironment(host)
   const worker: ShellAgent = { session: { header: { id: 'worker-ticket-a' } } }
@@ -30,6 +30,9 @@ describe('worker shell environment', () => {
     expect(h.contributor.name).toBe('dsh-superagent')
     const worker = h.contributor.resolve({ agent: h.worker })
     expect(worker).toMatchObject({ DSH_SUPERAGENT_TICKET: 'ticket-a', DSH_SUPERAGENT_DIR: '/work/github:101/fix',
+      DSH_SUPERAGENT_REPOSITORY_ID: testRepository.id, DSH_SUPERAGENT_REPOSITORY_PROVIDER: 'github',
+      DSH_SUPERAGENT_REPOSITORY: testRepository.slug, DSH_SUPERAGENT_REPOSITORY_ACCOUNT: 'agent-bot',
+      DSH_SUPERAGENT_REPOSITORY_COMMIT_EMAIL: '7+agent-bot@users.noreply.github.com',
       DSH_SUPERAGENT_GITHUB_REPOSITORY: testRepository.slug, DSH_SUPERAGENT_GITHUB_ACCOUNT: 'agent-bot',
       DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL: '7+agent-bot@users.noreply.github.com', DSH_SUPERAGENT_GITHUB_NUMBER: '12',
       DSH_SUPERAGENT_GITHUB_PR_HEAD: '' })

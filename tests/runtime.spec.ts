@@ -28,7 +28,7 @@ import { feishuChannel } from '../src/sources/feishu-trigger.ts'
 import { commentTrigger, githubChannel } from '../src/sources/github-trigger.ts'
 import { IM_WORDS } from '../src/infra/text.ts'
 import { observePull, pullOf } from '../src/sources/github-pull.ts'
-import { credentialHelper, workerGitConfig } from '../src/infra/environment.ts'
+import { credentialHelper, giteeCredentialHelper, workerGitConfig } from '../src/infra/environment.ts'
 import { policyHistory } from '../src/app/settings-history.ts'
 import { overview } from '../src/app/views/overview.ts'
 import { preview, readable } from '../src/app/views/text.ts'
@@ -84,6 +84,7 @@ const AGENT = () => join(directory, 'agent-gh')
 const OTHER = () => join(directory, 'other-gh')
 const BOT = () => join(directory, 'lark-bot')
 const HELPERS = 'git config -z --show-origin --get-all credential.https://github.com.helper'
+const GITEE_HELPERS = 'git config -z --show-origin --get-all credential.https://gitee.com.helper'
 /** The host may already point git at its own isolated config; setup must restore that value rather than unset it. */
 const INHERITED_GIT_CONFIG_GLOBAL = process.env.GIT_CONFIG_GLOBAL
 const SCOPED = 'git config -z --show-scope --get-regexp ^(credential\\..*|http\\..*extraheader)$'
@@ -138,7 +139,13 @@ async function acceptedTicket(trigger = feishu('1', '@bot 修一下回归'), rep
 }
 beforeEach(async () => {
   directory = mkdtempSync(join(tmpdir(), 'orchestrator-runtime-'))
-  vi.spyOn(Commands.prototype, 'gh').mockImplementation(async args => args[1] === 'user' ? { login: 'agent-bot' } : args[1]?.includes('/pulls/') ? { state: 'open', user: { login: 'agent-bot' }, html_url: 'https://github.com/acme/widgets/pull/' + args[1].split('/').at(-1), head: { ref: `agent/${String(runtime.store.tickets.list()[0]?.execution?.name)}`, sha: 'head-1', repo: { full_name: 'acme/widgets' } } } : { default_branch: 'master', permissions: { push: true } })
+  vi.spyOn(Commands.prototype, 'gh').mockImplementation(async args => args[1] === 'user' ? { login: 'agent-bot' } : args[1]?.includes('/pulls/') ? (() => {
+    const number = Number(args[1].split('/').at(-1))
+    return { id: 7000 + number, number, title: 'Fix', state: 'open', user: { login: 'agent-bot' },
+      html_url: 'https://github.com/acme/widgets/pull/' + number, created_at: '2026-09-09T00:00:00Z', updated_at: '2026-09-09T00:00:00Z',
+      head: { ref: `agent/${String(runtime.store.tickets.list()[0]?.execution?.name)}`, sha: 'head-1', repo: { id: 101, full_name: 'acme/widgets' } },
+      base: { ref: 'master', repo: { id: 101, full_name: 'acme/widgets' } } }
+  })() : { default_branch: 'master', permissions: { push: true } })
   vi.spyOn(Commands.prototype, 'lark').mockResolvedValue({ users: [{ member_id: MEMBER, name: 'Alice' }], has_more: false })
   vi.spyOn(Commands.prototype, 'git').mockResolvedValue('')
   vi.spyOn(Commands.prototype, 'run').mockResolvedValue('{"ok":true,"data":{}}')
@@ -152,6 +159,7 @@ beforeEach(async () => {
     [`${BOT()} config strict-mode`]: 'strict-mode: bot (source: profile)',
     [`${BOT()} api GET /open-apis/bot/v3/info --as bot --format ndjson`]: '{"bot":{"open_id":"ou_bot"},"code":0,"msg":"ok"}',
     [HELPERS]: `file:${workerGitConfig(directory)}\0${credentialHelper(directory)}\0`,
+    [GITEE_HELPERS]: `file:${workerGitConfig(directory)}\0${giteeCredentialHelper(directory)}\0`,
     [SCOPED]: `global\0credential.helper\n\0global\0credential.https://github.com.helper\n${credentialHelper(directory)}\0`,
   }
   const ctx = new Context()
@@ -1342,7 +1350,9 @@ it('records a report, the PR it binds and its relay together, or none of them', 
   await expect(runTool(sessionId, 'orchestrator_report', { state: 'ready', summary: 'done', pr_number: 42, human_action: 'Ship it?' })).rejects.toThrow()
   // A PR the pull request rules refuse records no report.
   vi.mocked(Commands.prototype.gh).mockImplementation(async args => args[1]?.includes('/pulls/')
-    ? { state: 'open', user: { login: 'someone' }, html_url: 'https://github.com/acme/widgets/pull/7', head: { ref: 'feature/other', sha: 'h', repo: { full_name: 'acme/widgets' } } }
+    ? { id: 7007, number: 7, title: 'Other', state: 'open', created_at: '2026-09-09T00:00:00Z', updated_at: '2026-09-09T00:00:00Z',
+      user: { login: 'someone' }, html_url: 'https://github.com/acme/widgets/pull/7',
+      head: { ref: 'feature/other', sha: 'h', repo: { id: 101, full_name: 'acme/widgets' } }, base: { ref: 'master', repo: { id: 101, full_name: 'acme/widgets' } } }
     : { default_branch: 'master', permissions: { push: true } })
   await expect(runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: 'pr open', pr_number: 7, human_action: 'Desktop too?' })).rejects.toThrow()
   const after = runtime.store.tickets.get(ticket.id)!

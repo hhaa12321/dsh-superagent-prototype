@@ -1,7 +1,6 @@
 /**
- * Gitee Source kind: reads one bound repository's Issues, its comments, and pull requests through the Gitee forge adapter,
- * ingests them as repository-scoped Triggers, and reports source-instance health. Read path only: Phase 3 has no Gitee
- * token in worker environments, no writes, and no pull-request creation or observation.
+ * Gitee Source kind: reads one bound repository's Issues, their comments, and pull requests through the Gitee forge adapter,
+ * ingests them as repository-scoped Triggers, follows the pull requests its Tickets claim, and reports source-instance health.
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { key, type Trigger } from '../core/index.ts'
@@ -11,7 +10,9 @@ import { z } from 'zod'
 import type { RepositoryBinding } from '../repository.ts'
 import type { ForgeComment, ForgeIssue, ForgePage, ForgePull, ForgeReadContext } from '../forge/ports.ts'
 import { giteeForgeAdapter } from '../forge/gitee.ts'
+import { nativePullId } from '../forge/pulls.ts'
 import { health, sourceContext, type SourceContext } from './host.ts'
+import { giteeLink, sendGitee } from './gitee-channel.ts'
 import type { Localized, SourceKind } from './kind.ts'
 import { KV } from '../kv.ts'
 import { cursorAt, pause, pollFailure } from './poll.ts'
@@ -40,6 +41,9 @@ function scopeOf(meta: Record<string, unknown>): Scope | undefined {
 export const mentions = (text: string, login: string): boolean =>
   new RegExp(`(?:^|[^a-zA-Z0-9_@])@${escapeRegExp(login)}(?![a-zA-Z0-9_-])`, 'i').test(text)
 const threadRef = (ref: GiteeRef, id: string) => ({ source: ref.sourceId, id, repositoryId: ref.repositoryId })
+/** Where a Gitee Issue or pull request can receive a reply; `isPr` selects the pull-request page and label. */
+const channelRef = (ref: GiteeRef, threadId: string, number: string, url: string, isPr = false) => ({ source: ref.sourceId,
+  thread: `${ref.sourceId}:${threadId}`, address: { number, ...(url ? { url } : {}), ...(isPr ? { isPr: 'true' } : {}) }, repositoryId: ref.repositoryId })
 /** The Source instance and repository binding a Gitee event belongs to. */
 export interface GiteeRef { sourceId: string; repositoryId: string }
 /** Builds the Trigger of a newly opened or newly updated Issue; its identity is Gitee's immutable numeric Issue ID. */
@@ -48,6 +52,7 @@ export function giteeIssueTrigger(issue: ForgeIssue, agent: string, ref: GiteeRe
     threads: [threadRef(ref, issue.threadId)], actor: { source: ref.sourceId, id: issue.author.login },
     human: !sameName(issue.author.login, agent), at: issue.createdAt, text: `${issue.title}\n\n${issue.body}`,
     ...mentions(`${issue.title}\n${issue.body}`, agent) ? { addressed: 'mention' as const } : {}, url: issue.webUrl,
+    channel: channelRef(ref, issue.threadId, issue.displayNumber, issue.webUrl),
     meta: { kind: 'issue', number: issue.displayNumber, nativeId: issue.nativeId, threadId: issue.threadId, provider: 'gitee',
       ...sameName(issue.author.login, agent) ? { self: true } : {} } }
 }
@@ -57,6 +62,7 @@ export function giteeCommentTrigger(comment: ForgeComment, issue: ForgeIssue, ag
     threads: [threadRef(ref, issue.threadId)], actor: { source: ref.sourceId, id: comment.author.login },
     human: !sameName(comment.author.login, agent), at: comment.updatedAt, text: comment.body,
     ...mentions(comment.body, agent) ? { addressed: 'mention' as const } : {}, ...comment.webUrl ? { url: comment.webUrl } : { url: issue.webUrl },
+    channel: channelRef(ref, issue.threadId, issue.displayNumber, issue.webUrl),
     meta: { kind: 'comment', number: issue.displayNumber, nativeId: issue.nativeId, threadId: issue.threadId, commentId: comment.nativeId,
       issueNumber: issue.displayNumber, issueNativeId: issue.nativeId, provider: 'gitee',
       ...sameName(comment.author.login, agent) ? { self: true } : {} } }
@@ -67,16 +73,28 @@ export function giteePullTrigger(pull: ForgePull, agent: string, ref: GiteeRef):
   return { id: key('gitee-pull', ref.sourceId, ref.repositoryId, pull.nativeId), source: ref.sourceId, repositoryId: ref.repositoryId,
     threads: [threadRef(ref, thread)], actor: { source: ref.sourceId, id: pull.author.login }, human: !sameName(pull.author.login, agent),
     at: pull.createdAt, text: `${pull.title}\n\n${pull.body}`, ...mentions(`${pull.title}\n${pull.body}`, agent) ? { addressed: 'mention' as const } : {},
-    url: pull.webUrl, meta: { kind: 'pull', number: pull.displayNumber, nativeId: pull.nativeId, threadId: thread, isPr: true, provider: 'gitee',
+    url: pull.webUrl, channel: channelRef(ref, thread, pull.displayNumber, pull.webUrl, true),
+    meta: { kind: 'pull', number: pull.displayNumber, nativeId: pull.nativeId, threadId: thread, isPr: true, provider: 'gitee',
       ...sameName(pull.author.login, agent) ? { self: true } : {} } }
+}
+/** Builds the Trigger of a comment on a claimed pull request, keeping its own native comment identity. */
+export function giteePullCommentTrigger(comment: ForgeComment, pull: ForgePull, agent: string, ref: GiteeRef): Trigger {
+  const thread = `pull:${pull.nativeId}`
+  return { id: key('gitee-pull-comment', ref.sourceId, ref.repositoryId, pull.nativeId, comment.nativeId), source: ref.sourceId,
+    repositoryId: ref.repositoryId, threads: [threadRef(ref, thread)], actor: { source: ref.sourceId, id: comment.author.login },
+    human: !sameName(comment.author.login, agent), at: comment.updatedAt, text: comment.body,
+    ...mentions(comment.body, agent) ? { addressed: 'mention' as const } : {}, ...comment.webUrl ? { url: comment.webUrl } : { url: pull.webUrl },
+    channel: channelRef(ref, thread, pull.displayNumber, pull.webUrl, true),
+    meta: { kind: 'pull-comment', number: pull.displayNumber, nativeId: pull.nativeId, threadId: thread, commentId: comment.nativeId, isPr: true,
+      provider: 'gitee', ...sameName(comment.author.login, agent) ? { self: true } : {} } }
 }
 
 export const giteeKind: SourceKind<GiteeConfig> = {
   kind: 'gitee',
   repositoryBound: true,
   title: { zh: 'Gitee', en: 'Gitee' },
-  description: { zh: '一个 Gitee 仓库的只读来源：接收发给智能体的 Issue、评论和新 PR，把它们保存为仓库范围内的触发与对话。本阶段不写 Gitee，也不在 Gitee 工单上运行工人。',
-    en: 'A read-only Source for one Gitee repository: receives Issues, comments, and new pull requests addressed to the agent and stores them as repository-scoped Triggers and Threads. This phase writes nothing to Gitee and runs no worker for a Gitee Ticket.' },
+  description: { zh: '一个 Gitee 仓库的来源：接收发给智能体的 Issue、评论和新 PR，把它们保存为仓库范围内的触发与对话，并在该仓库里运行工单、创建 PR、写评论。',
+    en: 'A Source for one Gitee repository: receives Issues, comments, and new pull requests addressed to the agent, stores them as repository-scoped Triggers and Threads, and runs Tickets there, opening pull requests and writing comments.' },
   schema: GiteeConfigSchema,
   fields: [
     { key: 'repository', type: 'text', pattern: '[A-Za-z0-9_.\\-]+/[A-Za-z0-9_.\\-]+', label: { zh: '监听的仓库', en: 'Repository' },
@@ -95,14 +113,15 @@ export const giteeKind: SourceKind<GiteeConfig> = {
       hint: { zh: '打开后，Issue 上没有 @ 智能体的评论也会收到，由策略的接收表决定是否成为候选。评论里的 @ 总会收到。',
         en: 'Comments on Issues that do not mention the agent are received too, and the Policy\'s admission table decides whether they become candidates. A mention in a comment is always received.' } },
     { key: 'observePulls', type: 'switch', label: { zh: '接收仓库里的新 PR', en: 'Receive new pull requests in the repository' },
-      hint: { zh: '打开后，没有 @ 智能体的新 PR 也会收到。本阶段只读 PR，不创建、不认领、不观察合并。',
-        en: 'New pull requests that do not mention the agent are received too. This phase only reads pull requests: it creates, claims, and observes no merge.' } },
+      hint: { zh: '打开后，没有 @ 智能体的新 PR 也会收到。工单认领的 PR 无论这个开关如何，都会观察它的状态和评论。',
+        en: 'New pull requests that do not mention the agent are received too. A pull request a Ticket claims is observed for its state and comments whatever this switch says.' } },
   ],
   scope: ({ meta }, config) => {
     const row = scopeOf(meta)
     return { listened: true, observed: row !== undefined && config[OBSERVED[row]], ...row ? { row } : {} }
   },
   health: ['gitee'],
+  channel: { send: sendGitee, link: giteeLink },
   policy: {
     schema: z.object({ allowed: z.array(z.object({ id: z.string().regex(/^[A-Za-z0-9_.-]+$/) }).strict()).default([]) }).strict(),
     fields: [{ key: 'allowed', type: 'rows', label: { zh: '能发起工作的 Gitee 账号', en: 'Gitee accounts that may originate work' },
@@ -119,9 +138,31 @@ export const giteeKind: SourceKind<GiteeConfig> = {
 }
 export { giteeKind as kind }
 
-/** One poll of an enabled Gitee Source: reads its binding's Issues, comments, and pull requests from persisted cursors. */
+/** The credential of this instance's binding, and the token the host process holds for it; neither is persisted here. */
+function credentialOf(ctx: SourceContext, binding: RepositoryBinding): { credential: { login: string; tokenEnv: string }; token: string } {
+  const credential = ctx.deployment.giteeCredentials[binding.credentialId]
+  if (!credential) throw new Error(`Repository ${binding.id} has no resolved Gitee credential ${binding.credentialId}`)
+  const token = process.env[credential.tokenEnv]
+  if (!token) throw new Error(`The Gitee credential ${credential.tokenEnv} is not set in the dsh-superagent process`)
+  return { credential, token }
+}
+/**
+ * One poll of an enabled Gitee Source: reads its binding's Issues, comments, and pull requests from persisted cursors. A
+ * disabled Source takes in nothing new, but still observes the pull requests of the open Tickets it accepted, so a merge
+ * or close can end them.
+ */
 export async function pollWhenEnabled(ctx: SourceContext, signal?: AbortSignal): Promise<number> {
-  if (!ctx.config<GiteeConfig>()) { ctx.report('gitee', health('paused', 'sourceOff')); return 60 }
+  if (!ctx.config<GiteeConfig>()) {
+    if (!ctx.repository) { ctx.report('gitee', health('paused', 'sourceOff')); return 60 }
+    // A Source disabled before setup resolved a binding has nothing to observe.
+    const binding = ctx.repository
+    const { credential, token } = credentialOf(ctx, binding)
+    const started = new Date().toISOString()
+    try { await pollTicketPulls(ctx, binding, credential.login, { signal, token }, started, () => !!signal?.aborted) }
+    catch (error) { if (!signal?.aborted) throw error }
+    ctx.report('gitee', health('paused', 'sourceOff'))
+    return 60
+  }
   // A failed setup leaves this binding unresolved; its card states the problem and this loop reads nothing.
   if (!ctx.repository) { ctx.report('gitee', health('paused', 'setupPending')); return 60 }
   return pollRound(ctx, signal)
@@ -136,10 +177,7 @@ export async function pollRound(ctx: SourceContext, signal?: AbortSignal): Promi
   if (!config) return 60
   const binding = ctx.repository
   if (!binding) throw new Error(`Gitee Source ${ctx.sourceId} has no repository binding`)
-  const credential = ctx.deployment.giteeCredentials[binding.credentialId]
-  if (!credential) throw new Error(`Repository ${binding.id} has no resolved Gitee credential ${binding.credentialId}`)
-  const token = process.env[credential.tokenEnv]
-  if (!token) throw new Error(`The Gitee credential ${credential.tokenEnv} is not set in the dsh-superagent process`)
+  const { credential, token } = credentialOf(ctx, binding)
   const started = new Date().toISOString()
   const context: ForgeReadContext = { signal, token }
   const ref: GiteeRef = { sourceId: ctx.sourceId, repositoryId: binding.id }
@@ -189,10 +227,77 @@ export async function pollRound(ctx: SourceContext, signal?: AbortSignal): Promi
       failures.push(`pull requests: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
+  // Claimed pull requests are observed for every open Ticket, whether or not new PRs are received at all.
+  let claimed = 0
+  try { claimed = await pollTicketPulls(ctx, binding, credential.login, context, started, stopped) }
+  catch (error) {
+    if (stopped()) throw error
+    failures.push(`claimed pull requests: ${error instanceof Error ? error.message : String(error)}`)
+  }
   if (failures.length) throw new Error(`${failures.length} Gitee reads failed: ${failures.slice(0, 3).join('; ')}`)
-  ctx.report('gitee', { state: 'ready', detail: `${counts.issues} new Issues, ${counts.comments} comments, ${counts.pulls} pull requests; next poll ≥ ${config.pollSeconds}s`,
-    at: started })
+  ctx.report('gitee', { state: 'ready', detail: `${counts.issues} new Issues, ${counts.comments} comments, ${counts.pulls} pull requests`
+    + `${claimed ? `, ${claimed} claimed pull-request updates` : ''}; next poll ≥ ${config.pollSeconds}s`, at: started })
   return Math.max(60, config.pollSeconds)
+}
+/**
+ * Observes the pull requests open Tickets of this binding follow: their provider state, which ends the correct Ticket on
+ * merge or close, and their conversation and code comments, which arrive as Triggers on the PR Thread. The Thread key keeps
+ * the provider-native PR ID, and its stored display number is what Gitee's detail endpoint takes; both survive a restart.
+ */
+async function pollTicketPulls(ctx: SourceContext, binding: RepositoryBinding, login: string, context: ForgeReadContext, started: string,
+  stopped: () => boolean): Promise<number> {
+  let updates = 0
+  let failures = 0
+  const seen = new Set<string>()
+  const ref: GiteeRef = { sourceId: ctx.sourceId, repositoryId: binding.id }
+  for (const ticket of ctx.tickets.open().filter(item => (item.repositoryId ?? null) === binding.id)) {
+    for (const follow of ticket.follows ?? []) {
+      if (follow.closed || stopped()) continue
+      const nativeId = nativePullId(follow.thread)
+      if (!nativeId || seen.has(nativeId)) continue
+      seen.add(nativeId)
+      const thread = ctx.threads.get(follow.thread)
+      try {
+        const display = thread?.meta.number === undefined ? '' : String(thread.meta.number)
+        if (!display) throw new Error(`Thread ${follow.thread} has no pull-request display number`)
+        const pull = await giteeForgeAdapter.readPull(binding, display, context)
+        if (pull.nativeId !== nativeId) throw new Error(`Pull request #${display} is ${pull.nativeId}, not the claimed ${nativeId}`)
+        ctx.threads.patch(follow.thread, { number: pull.displayNumber, nativeId: pull.nativeId, isPr: true, url: pull.webUrl, prAuthor: pull.author.login })
+        ctx.threads.describe(follow.thread, { facts: { state: { value: pull.state } } })
+        if (pull.state !== 'open') {
+          // Gitee reports a merged pull request as `merged`, or as `closed` with `merged_at`; both end the Ticket as merged.
+          const outcome = pull.state === 'merged' ? 'merged' : 'closed'
+          ctx.tickets.threadClosed({ source: ctx.sourceId, id: follow.thread.slice(follow.thread.indexOf(':') + 1), repositoryId: binding.id },
+            outcome, pull.mergedAt ?? pull.closedAt ?? started)
+          updates += 1
+          continue
+        }
+        const cursorKey = KV.gitee.pull(ctx.sourceId, binding.id, follow.thread.slice(follow.thread.indexOf(':') + 1))
+        const since = ctx.state.get(cursorKey)?.since ?? thread?.createdAt ?? started
+        // A Gitee pull request keeps its conversation in the Issue comment stream and its code comments in the PR comment
+        // stream; read both, and deduplicate an item that both endpoints report by its native comment ID.
+        const conversation = await pages(next => giteeForgeAdapter.listComments(binding, { displayNumber: pull.displayNumber },
+          { since, cursor: next }, context))
+        const review = await pages(next => giteeForgeAdapter.listPullComments(binding, pull, { since, cursor: next }, context))
+        const comments = new Map<string, ForgeComment>()
+        for (const comment of [...conversation, ...review]) comments.set(comment.nativeId, comment)
+        for (const comment of comments.values()) {
+          if (stopped()) throw new Error('The Gitee Source stopped during the poll')
+          if (Date.parse(comment.updatedAt) < Date.parse(since) || sameName(comment.author.login, login)) continue
+          await ctx.receive(giteePullCommentTrigger(comment, pull, login, ref))
+          updates += 1
+        }
+        ctx.state.set(cursorKey, { since: cursorAt(started) })
+        ctx.threads.patch(follow.thread, { pollError: undefined })
+      } catch (error) {
+        if (stopped()) throw error
+        failures += 1
+        ctx.threads.patch(follow.thread, { pollError: String(error) })
+      }
+    }
+  }
+  if (failures) throw new Error(`${failures} claimed pull-request reads failed`)
+  return updates
 }
 /** Reads one Issue's comments since its own cursor; returns how many were ingested. */
 async function readComments(ctx: SourceContext, binding: RepositoryBinding, issue: ForgeIssue, config: GiteeConfig, agent: string, ref: GiteeRef,

@@ -67,6 +67,8 @@ The prepare command and Executor instructions receive the same execution variabl
 | Variable | Registered by | Value |
 | --- | --- | --- |
 | `DSH_SUPERAGENT_DIR`, `DSH_SUPERAGENT_NAME`, `DSH_SUPERAGENT_TICKET` | Executor | The Ticket's directory, short name and id |
+| `DSH_SUPERAGENT_REPOSITORY_ID`, `DSH_SUPERAGENT_REPOSITORY_PROVIDER`, `DSH_SUPERAGENT_REPOSITORY` | Executor | The Ticket's RepositoryBinding, its forge, and its `owner/name` |
+| `DSH_SUPERAGENT_REPOSITORY_ACCOUNT`, `DSH_SUPERAGENT_REPOSITORY_COMMIT_EMAIL` | Executor | The binding account's login and the commit email a worker commits with |
 | `DSH_SUPERAGENT_BLOCKED_COMMANDS` | Executor | Commands the Executor may not run |
 | `DSH_SUPERAGENT_GITHUB_REPOSITORY` | GitHub | The repository the Source watches, `owner/name` |
 | `DSH_SUPERAGENT_GITHUB_ACCOUNT`, `DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL` | GitHub | The agent account and its commit email |
@@ -75,7 +77,7 @@ The prepare command and Executor instructions receive the same execution variabl
 
 Ticket-specific values come from its directory and originating Trigger. Other values come from the current deployment settings. Only the panel can change execution environment settings; text sent to the main Session cannot change the configured shell command.
 
-Workers reach GitHub through the agent account's `gh` and Feishu through the bot's `lark-cli`. Blocked commands fail when invoked by name.
+Workers reach GitHub through the agent account's `gh`, Feishu through the bot's `lark-cli`, and Gitee through Git and the binding's worker tools. The Git credential helper for each forge is binding-scoped: a Gitee helper asks the running process for one binding's credential over its private socket, and no token enters the worker environment or a generated credential file. Blocked commands fail when invoked by name.
 
 These wrappers and directories establish defaults, not a security boundary. A worker can still execute a program by absolute path.
 
@@ -95,7 +97,7 @@ Reviews without a body, such as approvals, also arrive as Triggers and can wake 
 - **Nothing to do:** an Executor that finds no work for a person to act on, such as a request that does not reproduce or is superseded, reports `dropped`. The Ticket ends without a message, unless a matched rule asks for one, and a person's later message on its Threads resumes it.
 ### Pull requests
 
-A Ticket follows the pull request it started from once its Executor reports it. It also follows each pull request opened from its branch once reported by the Executor or found by the GitHub Source. Reopened pull requests are followed again.
+A Ticket follows the pull request it started from once its Executor reports it. It also follows each pull request opened from its branch once reported by the Executor or found by its forge Source. A followed pull request's Thread keeps the provider-native PR ID; a Gitee PR's display number is stored beside it because Gitee's detail endpoint takes the display number. Reopened pull requests are followed again.
 
 The Ticket is done when none of the pull requests it opened remain open. If it opened none, all pull requests it follows must be closed. It then ends with the outcome of the last relevant close and keeps its Subscriptions, allowing a later human comment to resume it.
 

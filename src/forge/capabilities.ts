@@ -12,7 +12,7 @@ export const ForgeCapabilitiesSchema = z.object({
   issues: z.object({ read: z.boolean(), comment: z.boolean() }).strict(),
   pulls: z.object({ read: z.boolean(), create: z.boolean(), comment: z.boolean(), reviews: z.boolean() }).strict(),
   ci: z.boolean(),
-  /** Whether the adapter's complete write path lets a Ticket execute here; Phase 3 reports false for Gitee. */
+  /** Whether the adapter's complete write path lets a Ticket execute here. */
   execution: z.boolean(),
 }).strict()
 export type ForgeCapabilities = z.infer<typeof ForgeCapabilitiesSchema>

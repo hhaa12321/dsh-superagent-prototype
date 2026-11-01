@@ -18,8 +18,9 @@ import { allowedSender, settingsPolicy } from '../policy.ts'
 import { SourceRegistry } from '../sources/registry.ts'
 import { Commands } from '../infra/commands.ts'
 import type { Deployment, Machine } from '../deployment.ts'
+import { FORGE_ADAPTERS } from '../deployment.ts'
 import type { RepositoryBinding } from '../repository.ts'
-import { environmentOf, ticketEnvironment, type Variable } from './execution-environment.ts'
+import { bindingAccount, environmentOf, ticketEnvironment, type Variable } from './execution-environment.ts'
 import type { SetupProblem } from '../setup.ts'
 import { DshExecutor, sourceTrigger, ticketOfSession, triggerMessage, workerSessionId } from '../executor/dsh.ts'
 import { registerShellEnvironment } from './shell-environment.ts'
@@ -47,7 +48,7 @@ import { Settings } from './settings.ts'
 import { sourceContextOf, type SourceContextDeps } from './source-context.ts'
 import type { ResourceHost } from './resources.ts'
 import { mainTools, type MainToolsHost } from './tools/main.ts'
-import { executorTools, type ExecutorToolsHost } from './tools/executor.ts'
+import { executorTools, originIssueOf, type ExecutorToolsHost, type ForgeToolHost } from './tools/executor.ts'
 
 // Source plugins interact with dsh-superagent exclusively through the `SourceHost` service interface.
 declare module '@deepseek-ai/cordis' { interface Context { orchestrator: SourceHost } }
@@ -124,7 +125,7 @@ export class Runtime extends Service implements SourceHost {
       // Each worker shell command receives its Ticket binding, which the generated gh shim and git credential helper enforce.
       this.disposers.push(registerShellEnvironment({ ctx, ticketOfSession: id => { const ticketId = ticketOfSession(id); return ticketId ? store.tickets.get(ticketId) : undefined },
         repositoryOf: ticket => ticket.repositoryId ? store.repositories.get(ticket.repositoryId) : undefined,
-        credentialOf: binding => this.setup.configured() ? this.setup.deployment.credentials[binding.credentialId] : undefined,
+        credentialOf: binding => this.setup.configured() ? bindingAccount(this.setup.deployment, binding) : undefined,
         triggerOf: ticket => store.triggers.get(ticket.origin.triggerId) }))
       const resources: ResourceHost = { store, pages: new TextCache(4_000_000), prompts, commands, masterId, context: ctx,
         commandsFor: (repositoryId?: string) => this.commandsFor(repositoryId),
@@ -181,7 +182,7 @@ export class Runtime extends Service implements SourceHost {
         get deployment() { return setup.deployment }, configured: () => setup.configured(),
         get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem }, receive: trigger => passes.receive(trigger) }
       this.toolHost = { context: ctx, engine, store, prompts, sessions, settings: this.settings, assessor, resources,
-        github: ticket => runtime.githubContext(ticket),
+        forge: ticket => runtime.forgeToolHost(ticket),
         requestPass: () => { passes.request() }, sendReplies: () => outbox.sent(),
         quietly: run => { this.quiet++; try { return run() } finally { this.quiet-- } } }
       this.ready = this.initialize()
@@ -201,6 +202,24 @@ export class Runtime extends Service implements SourceHost {
   githubContext(ticket: Ticket): SourceContext {
     if (!ticket.repositoryId) throw new Error('This ticket has no repository binding')
     return this.contextForRepository(ticket.repositoryId)
+  }
+  /**
+   * The forge operations of a ticket's binding for its worker tools: its provider adapter, the Source instance that owns
+   * the binding, and the account and per-call read context the adapter resolves. No secret is kept in the result.
+   */
+  forgeToolHost(ticket: Ticket): ForgeToolHost {
+    if (!ticket.repositoryId) throw new Error('This ticket has no repository binding')
+    const binding = this.store.repositories.get(ticket.repositoryId)
+    if (!binding) throw new Error(`Unknown repository binding ${ticket.repositoryId}`)
+    const adapter = FORGE_ADAPTERS.adapter(binding.provider)
+    if (!adapter) throw new Error(`No forge adapter handles ${binding.provider}`)
+    const source = this.contextForRepository(binding.id)
+    const account = bindingAccount(this.setup.deployment, binding)
+    if (!account) throw new Error(`Repository ${binding.id} has no resolved credential ${binding.credentialId}`)
+    return { binding, adapter, sourceId: source.sourceId, login: account.login,
+      context: adapter.readContext({ deployment: this.setup.deployment, binding, commands: source.commands, env: process.env }),
+      tickets: source.tickets, threads: source.threads, triggers: source.triggers,
+      originIssue: originIssueOf(this.store.triggers.get(ticket.origin.triggerId)) }
   }
   contextForRepository(repositoryId: string): SourceContext {
     const source = this.store.repositories.sources().find(item => item.repositoryId === repositoryId)
@@ -293,7 +312,7 @@ export class Runtime extends Service implements SourceHost {
       await this.ctx.sessionPersistence.flush()
     } finally {
       // Close the database before releasing the directory lock so another process cannot open the database mid-write; a compromised lock may already be released.
-      this.setup.restore()
+      await this.setup.restore()
       try { this.store.close() } finally {
         const unreleased = (error: unknown) => { this.ctx.logger.warn('dsh-superagent could not release its state directory lock: %s',
           String(error)) }

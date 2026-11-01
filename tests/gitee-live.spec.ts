@@ -1,6 +1,7 @@
 /**
- * Opt-in live authenticated Gitee smoke: resolves the prepared canary's account, push access, Issue, comment, and pull
- * requests over the real API, then ingests the canary into a temporary Store twice. Set `GITEE_LIVE_TOKEN_FILE` to a file
+ * Opt-in live authenticated Gitee read smoke: resolves the prepared canary's account, push access, Issue, comment, and pull
+ * requests over the real API, then ingests the canary into a temporary Store twice. The write path is covered by the fake
+ * forge in `gitee-execution.spec.ts`; final live write evidence needs a distinct human Gitee actor. Set `GITEE_LIVE_TOKEN_FILE` to a file
  * that contains `GITEE_TOKEN=<token>` (for example the running superagent process's `/proc/<pid>/environ`); the token is
  * read from that file, never from the command line, and never printed. Skipped without it.
  */
@@ -34,7 +35,7 @@ function liveToken(): string {
 }
 const at = '2026-11-01T00:00:00.000Z'
 
-describe.skipIf(!FILE)('live Gitee read-only smoke', () => {
+describe.skipIf(!FILE)('live Gitee read smoke', () => {
   it('validates the canary account, repository access, Issue, comment, and pull reads without exposing the token', async () => {
     const token = liveToken()
     const resolution = await giteeForgeAdapter.resolveRepository({ sourceId: 'gitee', config: { repository: SLUG, tokenEnv: 'GITEE_TOKEN' } },
