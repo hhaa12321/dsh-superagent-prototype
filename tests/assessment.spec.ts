@@ -37,7 +37,7 @@ function setup(strength: 'explicit' | 'inferred' = 'inferred', bodies = Array.fr
   sources.register(githubKind)
   let engine!: Engine
   const host: AssessorHost = {
-    get engine() { return engine }, commands, deployment: testDeployment(), settings: () => SettingsSchema.parse({}),
+    get engine() { return engine }, commands, commandsFor: () => commands, deployment: testDeployment(), settings: () => SettingsSchema.parse({}),
     threadContext: threadContext ?? (trigger => sources.threadContext(trigger)),
     effects: { enqueue: () => {}, handle: () => {} }, paused: () => false, deliver: async () => {}, candidateCard: async candidate => ({ eval_id: candidate.evalId }),
   }

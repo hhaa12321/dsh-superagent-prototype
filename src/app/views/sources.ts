@@ -3,7 +3,7 @@ import { threadKey } from '../../core/index.ts'
 import type { Deployment } from '../../deployment.ts'
 import type { Health } from '../../sources/host.ts'
 import type { SourceInstance } from '../../sources/kind.ts'
-import type { SourceRegistry } from '../../sources/registry.ts'
+import { healthKey, type SourceRegistry } from '../../sources/registry.ts'
 import type { SetupProblem } from '../../setup.ts'
 import { dayAgo, snapshot, type ViewHost } from './records.ts'
 import { preview } from './text.ts'
@@ -14,7 +14,8 @@ export function sourceHealth(sources: SourceRegistry, instance: SourceInstance, 
   const kind = sources.kind(instance.kind)
   const starting: Health = { state: 'starting', detail: '' }
   const parts = (kind?.health ?? []).map(name => {
-    const entry = health[name]
+    // Health entries are namespaced by Source instance so two instances of one kind never overwrite each other.
+    const entry = health[healthKey(instance.id, name)]
     return { name, ...(!entry || (instance.enabled && entry.code === 'sourceOff') ? starting : entry) }
   })
   return { id: instance.id, title: kind?.title ?? { zh: instance.id, en: instance.id }, health: parts }
@@ -33,7 +34,7 @@ export type SourceState = 'missing' | 'off' | 'error' | 'setup' | 'starting' | '
 function sourceState(instance: SourceInstance & { installed: boolean }, parts: { state: string }[], setup: SetupState): SourceState {
   if (!instance.installed) return 'missing'
   if (!instance.enabled) return 'off'
-  if (problemOf(instance.id, setup) || parts.some(part => part.state === 'error')) return 'error'
+  if (problemOf(instance.id, setup) || problemOf(instance.kind, setup) || parts.some(part => part.state === 'error')) return 'error'
   if (setup.problem) return 'setup'
   if (parts.some(part => part.state === 'starting')) return 'starting'
   return parts.some(part => part.state === 'paused') ? 'paused' : 'ready'
@@ -49,7 +50,7 @@ export function sourcesStatus(host: ViewHost, health: HealthMap, setup: SetupSta
   const dropped = droppedReplies(host)
   return sources.instances().map(instance => {
     const { health: parts, ...named } = sourceHealth(sources, instance, health)
-    const problem = problemOf(instance.id, setup)
+    const problem = problemOf(instance.id, setup) ?? problemOf(instance.kind, setup)
     return { ...named, installed: instance.installed, enabled: instance.enabled, state: sourceState(instance, parts, setup), health: parts,
       ...problem ? { problem } : {}, stats: stats[instance.id] ?? { received: 0, filtered: 0, lastAt: '' }, filtered: filtered(instance.id),
       dropped: dropped.filter(item => item.channel.source === instance.id) }

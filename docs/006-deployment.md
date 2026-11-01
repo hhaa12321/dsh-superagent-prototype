@@ -8,7 +8,7 @@ Use this guide to install, configure and operate dsh-superagent. It covers accou
 - **An agent GitHub account.** The agent comments, pushes branches and opens pull requests as this account, through a GitHub CLI signed in only as that account.
 - **Optional:** a Feishu bot for chat requests.
 
-Plugin configuration holds the state directory and machine limits. Use the panel for everything else: Sources for the repository and accounts, Policy for allowed lists, and Execution for worker directories and commands.
+Plugin configuration holds the state directory and machine limits. Use the panel for everything else: Sources for the repository and accounts, Policy for allowed lists, and Execution for worker directories and commands. This version starts from a fresh state directory: a database from an earlier version is refused, so move it aside rather than pointing the new build at it.
 
 ### Permissions and isolation
 

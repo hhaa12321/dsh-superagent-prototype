@@ -6,7 +6,8 @@ import { key, threadKey, type ChannelRef, type Decision, type OutboundMessage, t
   type ThreadFacts, type Ticket, type Trigger, type TriggerDisposition } from '../core/index.ts'
 import { KV, type Family, type Key } from '../kv.ts'
 import { SettingsSchema, type Settings, type SettingsOrigin, type SettingsSave } from '../policy.ts'
-import { OLDEST_SCHEMA, SCHEMA_VERSION, migrateTo11, tooOld } from './migration.ts'
+import { OLDEST_SCHEMA, SCHEMA_VERSION, tooOld } from './schema.ts'
+import type { RepositoryBinding } from '../repository.ts'
 import { Versions } from './versions.ts'
 import { storeReads } from './store-read.ts'
 
@@ -51,9 +52,10 @@ export { SCHEMA_VERSION }
 export class Store implements Repositories {
   readonly db: DatabaseSync
   /**
-   * Opens or creates the SQLite database at `path`, migrating schema 10 to schema 11 in a single transaction.
+   * Opens or creates the SQLite database at `path` in the fresh repository-aware schema.
    * @param report - Receives errors thrown by `afterCommit` callbacks without failing the committed transaction.
-   * @throws When the database schema is older than `OLDEST_SCHEMA` (10), newer than `SCHEMA_VERSION` (11), or when migration fails; in every case the database file is left unchanged and the SQLite handle is closed so a later attempt in the same process can open it.
+   * @throws When the database schema is older than `OLDEST_SCHEMA` (there is no migration) or newer than `SCHEMA_VERSION`;
+   * the database file is left unchanged and the handle is closed so a later attempt can open it.
    */
   constructor(path: string, private readonly report: (error: unknown) => void = () => {}) {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
@@ -65,35 +67,29 @@ export class Store implements Repositories {
       const version = this.get(KV.store.schema)
       if (version !== undefined && version > SCHEMA_VERSION) throw new Error(`Unsupported orchestrator database version ${version}`)
       if (version !== undefined && version < OLDEST_SCHEMA) throw new Error(tooOld(version))
-      const migrating = version !== undefined && version < SCHEMA_VERSION
-      try {
-        this.atomic(() => {
-          this.db.exec(`
-            CREATE TABLE IF NOT EXISTS trigger (id TEXT PRIMARY KEY, value TEXT NOT NULL, at TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS disposition (id TEXT PRIMARY KEY, value TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS thread (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS ticket (id TEXT PRIMARY KEY, value TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS decision (id TEXT PRIMARY KEY, thread TEXT NOT NULL, value TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS outbox (id TEXT PRIMARY KEY, value TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS trigger_thread (thread TEXT NOT NULL, id TEXT NOT NULL, at TEXT NOT NULL, human INTEGER NOT NULL,
-              PRIMARY KEY (thread, id));
-            CREATE TABLE IF NOT EXISTS effect (kind TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, seq INTEGER NOT NULL,
-              generation INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', due INTEGER NOT NULL,
-              since TEXT NOT NULL, PRIMARY KEY (kind, key));
-            CREATE INDEX IF NOT EXISTS trigger_at ON trigger(at);
-            CREATE INDEX IF NOT EXISTS trigger_thread_at ON trigger_thread(thread, at);
-            CREATE INDEX IF NOT EXISTS decision_thread ON decision(thread);
-            CREATE INDEX IF NOT EXISTS effect_due ON effect(kind, due, seq);
-          `)
-          this.addColumns()
-          if (migrating) migrateTo11(this)
-          if (version !== SCHEMA_VERSION) this.set(KV.store.schema, SCHEMA_VERSION)
-        })
-      } catch (error) {
-        if (!migrating) throw error
-        const reason = error instanceof Error ? error.message : String(error)
-        throw new Error(`The orchestrator database is unchanged at schema ${version}: its migration to schema ${SCHEMA_VERSION} failed: ${reason}`, { cause: error })
-      }
+      this.atomic(() => {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS repository (id TEXT PRIMARY KEY, value TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS source_binding (source TEXT PRIMARY KEY, repository TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS trigger (id TEXT PRIMARY KEY, value TEXT NOT NULL, at TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS disposition (id TEXT PRIMARY KEY, value TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS thread (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS ticket (id TEXT PRIMARY KEY, value TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS decision (id TEXT PRIMARY KEY, thread TEXT NOT NULL, value TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS outbox (id TEXT PRIMARY KEY, value TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS trigger_thread (thread TEXT NOT NULL, id TEXT NOT NULL, at TEXT NOT NULL, human INTEGER NOT NULL,
+            PRIMARY KEY (thread, id));
+          CREATE TABLE IF NOT EXISTS effect (kind TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, seq INTEGER NOT NULL,
+            generation INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', due INTEGER NOT NULL,
+            since TEXT NOT NULL, PRIMARY KEY (kind, key));
+          CREATE INDEX IF NOT EXISTS trigger_at ON trigger(at);
+          CREATE INDEX IF NOT EXISTS trigger_thread_at ON trigger_thread(thread, at);
+          CREATE INDEX IF NOT EXISTS decision_thread ON decision(thread);
+          CREATE INDEX IF NOT EXISTS effect_due ON effect(kind, due, seq);
+        `)
+        this.addColumns()
+        if (version !== SCHEMA_VERSION) this.set(KV.store.schema, SCHEMA_VERSION)
+      })
     } catch (error) {
       this.db.close()
       throw error
@@ -197,6 +193,27 @@ export class Store implements Repositories {
   }
   /** Saved settings revisions, newest first; revisions predating settings history are absent. */
   settingsHistory(limit = 20): SettingsVersion[] { return this.settingsVersions.list(limit) }
+
+  /** Persisted RepositoryBindings, the ownership boundary of every repository-bound Source instance. */
+  readonly repositories = {
+    get: (id: string): RepositoryBinding | undefined => { const row = this.db.prepare('SELECT value FROM repository WHERE id=?').get(id); return row ? JSON.parse(String(row.value)) as RepositoryBinding : undefined },
+    /** Every binding in ID order. */
+    list: (): RepositoryBinding[] => this.db.prepare('SELECT value FROM repository ORDER BY id').all().map(row => JSON.parse(String(row.value)) as RepositoryBinding),
+    save: (binding: RepositoryBinding): void => { this.db.prepare('INSERT INTO repository VALUES (?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value').run(binding.id, JSON.stringify(binding)) },
+    /** Binds a Source instance to exactly one RepositoryBinding, or removes its binding when `repositoryId` is undefined. */
+    bind: (sourceId: string, repositoryId: string | undefined): void => {
+      if (repositoryId === undefined) this.db.prepare('DELETE FROM source_binding WHERE source=?').run(sourceId)
+      else this.db.prepare('INSERT INTO source_binding VALUES (?,?) ON CONFLICT(source) DO UPDATE SET repository=excluded.repository').run(sourceId, repositoryId)
+    },
+    /** The RepositoryBinding ID of a Source instance, if it is repository-bound. */
+    ofSource: (sourceId: string): string | undefined => {
+      const row = this.db.prepare('SELECT repository FROM source_binding WHERE source=?').get(sourceId)
+      return row ? String(row.repository) : undefined
+    },
+    /** Every Source instance with its RepositoryBinding ID, in Source instance ID order. */
+    sources: (): { sourceId: string; repositoryId: string }[] =>
+      this.db.prepare('SELECT source, repository FROM source_binding ORDER BY source').all().map(row => ({ sourceId: String(row.source), repositoryId: String(row.repository) })),
+  }
 
   readonly triggers = {
     get: (id: string): Trigger | undefined => { const row = this.db.prepare('SELECT value FROM trigger WHERE id=?').get(id); return row ? JSON.parse(String(row.value)) as Trigger : undefined },

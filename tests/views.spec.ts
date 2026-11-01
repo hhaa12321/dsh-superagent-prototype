@@ -1,3 +1,4 @@
+import { githubRef } from './fixtures/deployment.ts'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -42,7 +43,7 @@ it('names the Thread of each dropped message: the one of the Trigger its Channel
   store.threads.save({ key: 'github:42', ref: { source: 'github', id: '42' }, createdAt: '', subscriptions: [], correlated: [], pending: [],
     meta: {} })
   drop('a', feishuChannel('oc_1', 'om_reply'))
-  drop('b', githubChannel(42))
+  drop('b', githubChannel(githubRef, 42))
   // A message whose Trigger and Thread the store no longer has links nowhere.
   drop('c', feishuChannel('oc_2', 'om_gone'))
   expect(Object.fromEntries(droppedReplies({ store, links }).map(item => [item.id, item.thread])))
@@ -103,11 +104,11 @@ it('states each Source by the first state that holds', () => {
   const states = (setup: Parameters<typeof sourcesStatus>[2], health: Parameters<typeof sourcesStatus>[1] = {}) =>
     Object.fromEntries(sourcesStatus(host, health, setup).map(source => [source.id, source.state]))
   expect(states({})).toEqual({ feishu: 'starting', github: 'starting' })
-  expect(states({}, { feishu: { state: 'ready', detail: '' }, history: { state: 'paused', detail: '' }, github: { state: 'error',
+  expect(states({}, { 'feishu:feishu': { state: 'ready', detail: '' }, 'history:feishu': { state: 'paused', detail: '' }, 'github:github': { state: 'error',
     detail: 'x' } }))
     .toEqual({ feishu: 'paused', github: 'error' })
   const problem = { place: 'deployment', code: 'stateDirUnset', values: {}, detail: '' } as never
-  expect(states({ problem }, { feishu: { state: 'ready', detail: '' }, history: { state: 'ready', detail: '' }, github: { state: 'ready',
+  expect(states({ problem }, { 'feishu:feishu': { state: 'ready', detail: '' }, 'history:feishu': { state: 'ready', detail: '' }, 'github:github': { state: 'ready',
     detail: '' } }))
     .toEqual({ feishu: 'setup', github: 'setup' })
 })
@@ -164,8 +165,8 @@ it('lists an Eval past its deadline, and as dsh-superagent\'s own errors only pa
   store.threads.save({ key: 'github:1', ref: { source: 'github', id: '1' }, createdAt: at, subscriptions: [], correlated: [], pending: [],
     evaluating, meta: {} })
   const error = (detail: string) => ({ state: 'error' as const, detail })
-  const health = { relay: error('relay failing'), reply: error('reply failing'), feishu: error('socket closed'),
-    history: error('read failed'),
+  const health = { relay: error('relay failing'), reply: error('reply failing'), 'feishu:feishu': error('socket closed'),
+    'history:feishu': error('read failed'),
     'sync:feishu': error('sync failed'), evals: error('unavailable'), launch: { state: 'ready' as const, detail: '' } }
   const found = problems(host, health)
   expect(found).toContainEqual({ kind: 'eval-overdue', thread: expect.objectContaining({ key: 'github:1', stage: 'evaluating' }) })

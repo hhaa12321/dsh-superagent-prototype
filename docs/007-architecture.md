@@ -159,7 +159,7 @@ Its interfaces are grouped by purpose:
 - **Outbox receipts:** `replyStatus` and `receipts`, written only by Outbox. Receipt operations are `get`, `waiting`, `behind`, `add`, `settle` and `withdraw`. `behind` checks whether an earlier message for the same Ticket and conversation is waiting with fewer than three failures. A withdrawn message settles with `channelGone` or `channelIgnored`. Read queries expose failed and dropped replies through `failingReplies`, `droppedReplies` and `droppedSince`.
 - **Typed key-value records:** `get`, `set`, `delete` and `keys`, using entries from `KV`.
 
-`afterCommit` runs an action only after the transaction commits, never after rollback. Runtime reads records in their stored shape; the schema 11 migration converts older supported records at startup.
+`afterCommit` runs an action only after the transaction commits, never after rollback. Runtime reads records in their stored shape; a fresh schema needs no migration, and an older state directory is refused at startup.
 
 ### Effects
 
@@ -291,7 +291,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 | Path | Responsibility |
 | --- | --- |
 | `src/index.ts` | The main plugin entry: reads the machine settings, starts the Runtime, and gives it the restart that a save of a Source's account uses |
-| `src/deployment.ts` | The plugin `Config` and `Machine`; `resolveDeployment` and `resolveFeishuBot` read the repository and the accounts from the Source settings, each CLI run as Executor shells run it; `SETUP_FIELDS` lists the Source fields setup reads. The code names no person, account or organization |
+| `src/deployment.ts` | The plugin `Config` and `Machine`; `resolveDeployment` resolves one `RepositoryBinding` per configured GitHub Source instance from the provider's immutable repository ID and verifies push access, and `resolveFeishuBot` reads the bot; each CLI runs as Executor shells run it; `SETUP_FIELDS` lists the Source fields setup reads. The code names no person, account or organization |
+| `src/repository.ts` | `RepositoryBinding` and its schema, the stable `<provider>:<providerRepositoryId>` key, a credential ID, and the workspace repository namespace |
 | `src/setup.ts` | Setup problems: `SetupError`, with a code, the place that fixes it and the English text the log, the main Session and the panel share |
 | `src/policy.ts` | The Policy: the settings schemas by block, the Policy version, the gate and Mandate revalidation |
 | `src/admission.ts` | The admission table's values, each cell's options and defaults, shared with the panel |
@@ -320,7 +321,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/notices.ts` | The main Session's notices and relays: `eventNotice`, `reportRelay`, `resultRelay` and `followupRelay` |
 | `src/app/store.ts` | The Store, and `Receipt`, a message of the outbox |
 | `src/app/store-read.ts` | `storeReads`: the Store's read queries for the views, the tools and the Sources' polls, which never write |
-| `src/app/migration.ts` | The schema 11 migration: one step from schema 10 that writes every stored record in its current shape |
+| `src/app/schema.ts` | `SCHEMA_VERSION`, `OLDEST_SCHEMA` and the refusal that sends an older state directory to a new one |
 | `src/app/effects.ts` | Effects |
 | `src/app/versions.ts` | `Versions`: a record kept as numbered snapshots with a pointer to the current one, for the settings and the prompts |
 | `src/app/cache.ts` | `TextCache`: texts kept in memory within a size, the least recently used dropped first |
@@ -353,7 +354,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/views/overview.ts` | The overview: Tickets that need a person, problems, the last day's flow and the Executor's load |
 | `src/executor/dsh.ts` | The DshExecutor, `WorkerSlots`, `ticketExecution`, `inputMessage` and `mandateInstructions` |
 | `src/executor/background.ts` | A worker's background work in DeepSeek Harness, the shell jobs its Session owns (`ctx.jobs`) and its subagents (`ctx.subagents`): `runningJobs`, `untilQuiet`, `killJobs`, `collectJobs`, `stopSubagents`, `stopBackground`, `until`, and `cancelled`, the workers whose turn a stop of their subagents cancelled |
-| `src/infra/commands.ts` | `Commands`, the CLI transport: `run`; `api` and `pages`, limited to the configured repository and validated; `lark` as the bot; `git`. `CliError` carries the code a command's output reports, such as a GitHub HTTP status, and a command that prints nothing fails with how it ended, never with its arguments; `validItems` skips and counts the malformed items of a list |
+| `src/infra/commands.ts` | `Commands`, the CLI transport: `run`; `withRepository`, and `api` and `pages`, limited to the bound RepositoryBinding and validated; `lark` as the bot; `git`. `CliError` carries the code a command's output reports, such as a GitHub HTTP status, and a command that prints nothing fails with how it ended, never with its arguments; `validItems` skips and counts the malformed items of a list |
 | `src/infra/environment.ts` | The agent's process environment: command shims, the git configuration and credential helper, `runAsWorker`, and the checks of the environment and of a Ticket's directory |
 | `src/infra/paths.ts` | The package's root, where packaged files are |
 | `src/infra/text.ts` | Word counts and the chat message limit, `fill` and `sameName` |
@@ -405,7 +406,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | --- | --- |
 | `tests/core-engine.spec.ts` | Domain rules on in-memory repositories: receiving, Eval, fan-out, resume and stop, interrupted Assignments, the pause, Policy changes, reports and outcomes, attaching, replies, failed deliveries and dismissed problems |
 | `tests/stage.spec.ts` | The Ticket stages, row by row |
-| `tests/policy.spec.ts` | Source scope, the gate, the admission table, Mandate revalidation, the Policy version, settings migrations and assessment outcomes |
+| `tests/policy.spec.ts` | Source scope, the gate, the admission table, Mandate revalidation, the Policy version and assessment outcomes |
 | `tests/registry.spec.ts` | `SourceRegistry`: instances, validation, Policy parts, Channels and Thread context |
 | `tests/sources.spec.ts` | The Feishu and GitHub Sources on a `SourceContext`: translation, polls and read positions, the pull request rules, health |
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
@@ -418,7 +419,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/passes.spec.ts` | Passes: one at a time, the ones asked for during a pass run as one after it, and the runtime health a failed pass reports |
 | `tests/outbox.spec.ts` | The Outbox on a running Runtime: messages wait while processing is paused or their Source is not installed |
 | `tests/cache.spec.ts` | `TextCache` |
-| `tests/queue.spec.ts` | The Runtime's work through the effect queue, and what earlier versions stored |
+| `tests/queue.spec.ts` | The Runtime's work through the effect queue, such as coalescing notices while the main Session is busy |
 | `tests/followups.spec.ts` | A person's follow-up on a Ticket's Thread: its notice to the main Session, the tools that act on it, what a burst costs; a worker's hand-back and context follow, and the main Session's note |
 | `tests/health.spec.ts` | One health entry per part, each cleared by its own next success |
 | `tests/delivery.spec.ts` | `AgentDelivery` |
@@ -430,8 +431,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/settings.spec.ts` | Settings saves that race a model or account check, a Policy sync that a save outran, and the refusals of the pause, a sync and a block |
 | `tests/views.spec.ts` | What the management views derive from the Store, such as the Thread a dropped message belongs to |
 | `tests/timeline.spec.ts` | A Thread's pages and a Trigger's neighbours by time and then id, with every received Trigger's time in one form |
-| `tests/migration.spec.ts` | The schema 11 migration: every stored record in its current shape, and the refusal of older schemas |
-| `tests/store.spec.ts` | Repositories and their working sets, in SQLite as in memory, the kv area, with every key of `KV` spelled only in `src/kv.ts` and the migration, settings history and queries |
+| `tests/repository-binding.spec.ts` | Repository identity: collision-free Thread keys, Trigger IDs, Tickets, cursors, health, workspaces and PR ownership across two bindings; cross-repository PR refusal; no global repository accessor; a schema 11 refusal; and a resumed Ticket's binding |
+| `tests/store.spec.ts` | Repositories and their working sets, in SQLite as in memory, the kv area, with every key of `KV` spelled only in `src/kv.ts`, settings history and queries |
 | `tests/prompts.spec.ts` | Prompt validation, assembly and versions |
 | `tests/cards.spec.ts` | The rules the built-in text must state, file by file |
 | `tests/model-surface.spec.ts` | Everything models read: tools, prompts, skills and inputs, checked against the tool schemas, the execution environment and the glossary, within a size budget per role |
@@ -459,13 +460,15 @@ One SQLite file, `<stateDir>/orchestrator.sqlite`, which only the Store opens.
 | `thread` | Threads: Subscriptions, the Tickets that follow it for context, queued Triggers, the Eval in progress, the count of its expiries and `meta`; the generated columns `active`, set while Triggers are queued or an Eval runs, and `subscribed`, its Source while a Ticket subscribes to it | Engine; Sources write `meta` |
 | `ticket` | Tickets with their Mandate, origin, execution, Assignments, Channels, Inputs and the Threads they follow; the generated columns `open`, set while it has not ended, and `active`, set while Inputs are undelivered or the latest Assignment is pending or running | Engine |
 | `decision` | Decisions, by Thread | Engine |
-| `effect` | The effect queue: per kind and key, the payload, its order, failed attempts with the last error, and when it is due | Effects; the schema 11 migration queues what earlier versions kept for the main Session |
+| `repository` | Each persisted RepositoryBinding: provider, immutable provider repository ID, slug, web URL, credential ID and enabled state | Setup |
+| `source_binding` | The one RepositoryBinding of each repository-bound Source instance, by stable `sourceId` | Setup |
+| `effect` | The effect queue: per kind and key, the payload, its order, failed attempts with the last error, and when it is due | Effects |
 | `outbox` | The receipt of each message for a Channel, by id, with the Ticket it is for and its `status`, `pending`, `sent` or `dropped`, kept so an id is never queued twice; for a dropped message, when and why, as the generated column `dropped`, its time, and a reason code. A message that waits has a `reply` effect, which holds its attempts | The Outbox |
 | `kv` | Every other record, by key | The part that names it |
 
 A generated column is computed from its row's JSON and is empty outside its set, and each has an index over its set, so a pass reads only active work. A database that predates a column gets it when the Store opens it.
 
-`KV` (`src/kv.ts`) defines each key-value record's owner, key and type. All readers and writers use these entries; only migration code names older keys.
+`KV` (`src/kv.ts`) defines each key-value record's owner, key and type. All readers and writers use these entries; a fresh schema keeps no names for older keys.
 
 | Records | Keys or contents |
 | --- | --- |
@@ -474,7 +477,7 @@ A generated column is computed from its row's JSON and is empty outside its set,
 | Prompt versions | `prompt-revision`, `prompt-version:<n>` |
 | Main Session | `master-id` |
 | Session prompt history | `session-prompts:<session id>` |
-| Source state | Read positions such as `github-cursor:<number>`, PR CI fingerprints and seen Feishu-topic messages; keys begin with the kind or `thread-` plus a Thread key |
+| Source state | Read positions such as `github-cursor:<sourceId>:<repositoryId>:<number>`, PR CI fingerprints and seen Feishu-topic messages; repository-bound keys include the Source instance and RepositoryBinding, and Feishu keys begin with the kind or `thread-` plus a Thread key |
 | Display names | `source-labels:<source id>` |
 
 Dismissal is stored on its Decision. Input text is rendered from the Ticket when read, so neither needs a separate key-value record.
@@ -483,7 +486,7 @@ Read caches use bounded in-memory `TextCache` instances and are lost on restart.
 
 Nothing deletes old records yet, so these grow without bound: the `trigger`, `disposition` and `decision` rows; ended Tickets and their Threads; the outbox's receipts; and in `kv`, every saved settings revision and prompt version, the prompt revisions each Session worked under, and the Sources' records per Thread and per Issue or pull request.
 
-`SCHEMA_VERSION` only increases. A database of a newer version refuses to start; `src/app/migration.ts` upgrades a database of the pre-release schema 10 once, at start, and refuses an older one.
+`SCHEMA_VERSION` only increases. A database of a newer version refuses to start; a database older than `OLDEST_SCHEMA` is refused with an instruction to start with a new state directory. There is no migration, dual read, or fallback: repository identity is part of the schema from its first version.
 
 ## Model-facing interfaces
 

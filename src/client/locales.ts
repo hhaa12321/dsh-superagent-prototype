@@ -723,6 +723,7 @@ const TEXT = {
   'userError.promptPartEmpty': ['「{part}」段落不能为空；要沿用内置文本，请恢复此段默认内容。', USER_ERRORS.promptPartEmpty[1]],
   'userError.sourceNotInstalled': ['{source} 来源的插件没有安装。', USER_ERRORS.sourceNotInstalled[1]],
   'userError.noLabels': ['这个来源没有可以刷新的名称。', USER_ERRORS.noLabels[1]],
+  'userError.crossRepository': ['那个线程属于仓库 {thread}，不属于这个工单的仓库 {ticket}；PR 不能跨仓库绑定。', USER_ERRORS.crossRepository[1]],
   'userError.nothingToSync': ['{source} 来源上的策略没有指定从哪里同步，或者这个来源已关闭或在等待部署检查。', USER_ERRORS.nothingToSync[1]],
   // Setup problems and health codes; English reuses the host's own text read by the log and main Session
   'setup.repositoryUnset': ['GitHub 来源没有设置监听的仓库。', SETUP_PROBLEMS.repositoryUnset[1]],

@@ -45,7 +45,7 @@ const BLOCKS: Record<'policy' | 'eval' | 'executor' | 'source', Block> = {
     guard: (current, candidate, origin) => { if (origin !== 'panel' && environment(current) !== environment(candidate)) throw new UserError('panelOnlyEnvironment') },
   },
   source: {
-    parse: (value, sources, id) => sources.validate(id, z.object({ enabled: z.boolean(), config: z.unknown() }).parse(value)),
+    parse: (value, sources, id) => sources.validate(id, z.object({ kind: z.string().regex(/^[a-z][a-z0-9-]*$/).optional(), enabled: z.boolean(), config: z.unknown() }).parse(value)),
     merge: (settings, value, id) => ({ ...settings, sources: { ...settings.sources, [id]: value as SettingsValue['sources'][string] } }),
     // Only the management panel may switch source accounts.
     guard: (current, candidate, origin) => { if (origin !== 'panel' && setupChanged(current, candidate)) throw new UserError('panelOnlyAccounts') },
@@ -153,7 +153,7 @@ export class Settings {
     const kind = block.startsWith('source:') ? 'source' : block
     if (!(kind in BLOCKS)) throw new UserError('unknownBlock', { block })
     const rules = BLOCKS[kind as keyof typeof BLOCKS]
-    if (kind === 'source' && !sources.kind(id)) throw new UserError('sourceNotInstalled', { source: id })
+    if (kind === 'source' && !sources.kindOf(id)) throw new UserError('sourceNotInstalled', { source: id })
     const parsed = rules.parse(value, sources, id)
     const current = store.settings()
     const candidate = rules.merge(current, parsed, id)
@@ -217,7 +217,7 @@ export class Settings {
     const { sources } = this.host
     if (!this.host.setup.configured()) return []
     return sources.instances().filter(instance => instance.installed && instance.enabled).flatMap(instance => {
-      const sync = sources.kind(instance.id)?.policy?.sync
+      const sync = sources.kind(instance.kind)?.policy?.sync
       const part = sources.policyPart(instance.id)
       return sync && part && sync.ready(part) ? [instance.id] : []
     })
@@ -234,7 +234,10 @@ export class Settings {
     const health = this.syncHealth(id)
     try {
       const revision = store.blockRevision('policy')
-      const part = await sources.kind(id)!.policy!.sync!.run(this.host.sourceHost, sources.policyPart(id)!, this.host.lifetime)
+      const instance = sources.instance(id)
+      const kind = instance && sources.kind(instance.kind)
+      if (!instance || !kind?.policy?.sync) throw new UserError('nothingToSync', { source: id })
+      const part = await kind.policy.sync.run(this.host.sourceHost, sources.policyPart(id)!, this.host.lifetime)
       if (revision !== store.blockRevision('policy')) throw new SettingsConflict('Policy changed during synchronization. Retry with the current settings.')
       const policy = store.settings().policy
       // Skip saving a new revision when the synced list is unchanged.

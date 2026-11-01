@@ -1,5 +1,6 @@
 /**
  * Process environment and CLI shims that bind git, gh, and lark-cli to the deployment's accounts and block disallowed commands.
+ * Repository identity and credentials are resolved per RepositoryBinding by `Commands`; the shim only selects the account.
  * Variables read by workers avoid `KEY|PASSWORD|SECRET|TOKEN` in their names because DSH strips credential-shaped variables from child environments.
  * Provides default-path guardrails rather than an OS-level security boundary, as workers run under the operator's OS user.
  */
@@ -76,8 +77,8 @@ async function own(file: string, text: string, mode = 0o644): Promise<void> {
  * Atomically writes worker CLI shims and the isolated git configuration file into the state directory, refusing to overwrite foreign files.
  * Each shim strips the shim directory from PATH before exec so wrapper scripts resolving `gh` or `lark-cli` by name reach the real binary.
  */
-export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' | 'repository' | 'github' | 'feishu'>, blockedCommands: readonly string[]): Promise<void> {
-  const { stateDir, repository, github, feishu } = deployment
+export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' | 'github' | 'feishu'>, blockedCommands: readonly string[]): Promise<void> {
+  const { stateDir, github, feishu } = deployment
   const dir = workerBin(stateDir)
   await mkdir(dir, { recursive: true })
   const before = await readdir(dir)

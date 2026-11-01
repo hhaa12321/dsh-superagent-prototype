@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { SettingsSchema, assessmentOutcome, policyEffects, settingsPolicy, policyVersion, allowedSender, anyoneAllowed, type Settings } from '../src/policy.ts'
 import type { MandateBasis } from '../src/core/index.ts'
-import { migrateSettings } from '../src/app/migration.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
 import { feishuKind } from '../src/sources/feishu.ts'
 import { githubKind } from '../src/sources/github.ts'
@@ -229,51 +228,6 @@ describe('revalidate and version', () => {
     expect(setup({ ...base, policy: { ...base.policy, sources: { ...base.policy.sources, github: { allowed: [], admission: {} } } } }).version).not.toBe(version)
   })
 })
-describe('settings migration', () => {
-  it('moves each member\'s identity into each Source\'s part of the Policy and drops the fields prompts and the execution environment replaced', () => {
-    const saved = SettingsSchema.parse(migrateSettings({
-      policy: { members: [{ name: 'Alice', feishuId: MEMBER, github: 'alice' }, { name: 'Bob', feishuId: 'ou_bob', github: '' }, { name: 'Carol', feishuId: '', github: 'carol' }], memberChat: CHAT, autoMergeLineLimit: 300,
-        rules: [{ id: 'visual', name: 'V', enabled: true, visual: true, instruction: 'x' }] },
-      executor: { maxWorkers: 2, reviewer: 'dave', visualReviewer: 'carol', branchPrefix: 'bot/' },
-      sources: { feishu: { enabled: true, config: { chats: [], directMessages: true }, authority: { chats: [] } } },
-    }))
-    expect(saved.policy).toEqual({
-      rules: [{ id: 'visual', name: 'V', enabled: true, instruction: 'x' }],
-      sources: { feishu: { allowed: [{ id: MEMBER, name: 'Alice' }, { id: 'ou_bob', name: 'Bob' }], syncChat: CHAT, admission: {} }, github: { allowed: [{ id: 'alice' }, { id: 'carol' }], admission: {} } },
-    })
-    expect(saved).toMatchObject({ paused: false, executor: { model: null, maxWorkers: 2, directory: '', prepare: '', blockedCommands: [] } })
-    expect(saved.sources.feishu).toEqual({ enabled: true, config: { chats: [], directMessages: true } })
-    expect(SettingsSchema.parse(migrateSettings(saved))).toEqual(saved)
-    expect(SettingsSchema.parse(migrateSettings({ executor: { maxWorkers: 2, paused: true } }))).toMatchObject({ paused: true, executor: { maxWorkers: 2 } })
-  })
-  it('moves pre-domain chat lists into the Feishu Source, the pause into a setting of its own, and members into the Sources\' parts', () => {
-    const migrated = SettingsSchema.parse(migrateSettings({ paused: true, allowedChats: [CHAT, OBSERVED], allowDirectMessages: false, pollSeconds: 120, maxWorkers: 5, members: [{ name: 'A', feishuId: MEMBER, github: 'a' }],
-      models: { orchestrator: { provider: 'p', model: 'm' }, worker: null, admission: null }, admission: { mode: 'auto', chats: [OBSERVED], maxEvaluators: 1, timeoutSeconds: 90, rules: [] } }))
-    expect(migrated).toEqual({
-      paused: true,
-      sources: { feishu: feishuSource({ chats: [{ chatId: CHAT, listen: 'mentions' }, { chatId: OBSERVED, listen: 'all' }], directMessages: false }), github: { enabled: true, config: { pollSeconds: 120 } } },
-      policy: { rules: [], sources: { feishu: { allowed: [{ id: MEMBER, name: 'A' }], admission: {} }, github: { allowed: [{ id: 'a' }], admission: {} } } },
-      eval: { mode: 'auto', timeoutSeconds: 90, model: { provider: 'p', model: 'm' } },
-      executor: { model: null, maxWorkers: 5, directory: '', prepare: '', blockedCommands: [] },
-    })
-    expect(migrateSettings(migrated)).toEqual(migrated)
-  })
-  it('leaves chats that were observed only while admission was off outside the Feishu Source', () => {
-    const migrated = SettingsSchema.parse(migrateSettings({ allowedChats: [CHAT], members: [], admission: { mode: 'off', chats: [OBSERVED] } }))
-    expect(migrated.sources.feishu!.config).toEqual({ chats: [{ chatId: CHAT, listen: 'mentions' }], directMessages: true })
-  })
-})
-
-it('renames the variables a stored prepare command reads from earlier project names to the current one', () => {
-  const settings = SettingsSchema.parse(migrateSettings({ executor: { prepare: 'git worktree add "$DSH_TAG_DIR" -b "agent/${DSH_GO_NAME}" "refs/x/$DSH_FREELANCER_TICKET"' } }))
-  expect(settings.executor.prepare).toBe('git worktree add "$DSH_SUPERAGENT_DIR" -b "agent/${DSH_SUPERAGENT_NAME}" "refs/x/$DSH_SUPERAGENT_TICKET"')
-})
-
-it('reads a stored GitHub Source configuration that names a merge account without it', () => {
-  const settings = SettingsSchema.parse(migrateSettings({ sources: { github: { enabled: true, config: { repository: 'acme/widgets', cli: 'gh-agent', mergeCli: 'gh-merge-account', pollSeconds: 120 } } } }))
-  expect(settings.sources.github!.config).toEqual({ repository: 'acme/widgets', cli: 'gh-agent', pollSeconds: 120 })
-})
-
 describe('assessment outcomes', () => {
   const settings = (mode: 'auto' | 'observe') => {
     const parsed = SettingsSchema.parse({})

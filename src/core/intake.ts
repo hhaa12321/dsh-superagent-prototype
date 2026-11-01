@@ -18,8 +18,12 @@ export class Intake extends EnginePart {
 
   receive(received: Trigger): ReceiveResult {
     // Normalize source timestamps (such as GitHub whole seconds) to canonical ISO form.
-    const trigger = { ...received, at: isoTime(received.at) }
+    const trigger = { ...received, repositoryId: received.repositoryId ?? null, at: isoTime(received.at) }
     if (!trigger.threads.length) throw new Error('A trigger must belong to at least one thread')
+    // Repository identity is fixed before acceptance: a Trigger, its Threads, and the Ticket it starts agree on one binding.
+    if (trigger.threads.some(ref => ref.repositoryId !== undefined && (ref.repositoryId ?? null) !== trigger.repositoryId)) {
+      throw new Error('A Trigger cannot span two repository bindings')
+    }
     if (this.repo.triggers.get(trigger.id)) return 'duplicate'
     const at = this.now()
     const filter = this.options.scope.scope(trigger)
@@ -32,7 +36,11 @@ export class Intake extends EnginePart {
     // Track reached tickets and whether they were reached only via context threads (a ticket's own thread makes `context` false).
     const reached = new Map<string, { ticket: Ticket; context: boolean }>()
     for (const ref of trigger.threads) {
-      const thread = this.thread(ref)
+      const thread = this.thread({ ...ref, repositoryId: trigger.repositoryId })
+      if (thread.repositoryId != null && thread.repositoryId !== trigger.repositoryId) {
+        throw new Error(`Thread ${thread.key} belongs to repository ${thread.repositoryId}, not ${trigger.repositoryId}`)
+      }
+      thread.repositoryId = trigger.repositoryId
       if (!thread.lastAt || trigger.at > thread.lastAt) thread.lastAt = trigger.at
       thread.correlated = [...new Set([...thread.correlated, ...keys.filter(other => other !== thread.key)])]
       for (const ticketId of thread.subscriptions) {

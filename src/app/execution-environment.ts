@@ -24,22 +24,34 @@ export function declaredVariables(sources: SourceRegistry, settings?: Settings):
     ...sources.declarations().map(({ kind, variables }) => ({ owner: kind, enabled: on.has(kind), variables }))]
 }
 
-export function environmentOf(input: { deployment: Deployment; sources: SourceRegistry; settings: Settings; ticket?: { id: string; name: string; directory: string }; trigger?: Trigger }): Variable[] {
-  const { deployment, sources, settings, ticket, trigger } = input
+/**
+ * Variables of a ticket's execution environment. `repositoryId` selects the ticket's binding, so a repository-bound
+ * variable (such as DSH_SUPERAGENT_GITHUB_REPOSITORY) names only that repository; repository-less work gets none.
+ */
+export function environmentOf(input: { deployment: Deployment; sources: SourceRegistry; settings: Settings;
+  ticket?: { id: string; name: string; directory: string }; trigger?: Trigger; repositoryId?: string }): Variable[] {
+  const { deployment, sources, settings, ticket, trigger, repositoryId } = input
   const executor: Record<string, string> = { DSH_SUPERAGENT_BLOCKED_COMMANDS: settings.executor.blockedCommands.join(' '), ...ticket ? { DSH_SUPERAGENT_DIR: ticket.directory, DSH_SUPERAGENT_NAME: ticket.name, DSH_SUPERAGENT_TICKET: ticket.id } : {} }
   const result: Variable[] = EXECUTOR_VARIABLES.filter(spec => !spec.ticket || ticket).map(spec => ({ key: spec.key, value: executor[spec.key] ?? '', description: spec.description, owner: 'executor' }))
-  for (const { kind, environment, config } of sources.environments(settings)) {
-    const values = environment.values({ deployment, config, ...trigger ? { trigger } : {} })
-    for (const spec of environment.variables) result.push({ key: spec.key, value: values[spec.key] ?? '', description: spec.description, owner: kind.kind })
+  // Without a ticket the values document what workers receive, so the first repository-bound Source illustrates them.
+  let documented = false
+  for (const { sourceId, environment, config, binding } of sources.environments(settings)) {
+    // A repository-bound ticket reads only its own binding's variables; a repository-less ticket reads none of them.
+    if (binding) {
+      if (ticket || repositoryId !== undefined) { if (binding.id !== repositoryId) continue }
+      else { if (documented) continue; documented = true }
+    }
+    const values = environment.values({ deployment, config, ...trigger ? { trigger } : {}, ...binding ? { binding } : {} })
+    for (const spec of environment.variables) result.push({ key: spec.key, value: values[spec.key] ?? '', description: spec.description, owner: sourceId })
   }
   return result
 }
 
 /** Combines a ticket's fixed directory, name, and origin trigger with the deployment's current settings. */
-export function ticketEnvironment(input: { deployment: Deployment; sources: SourceRegistry; settings: Settings; ticket: Ticket; trigger?: Trigger }) {
+export function ticketEnvironment(input: { deployment: Deployment; sources: SourceRegistry; settings: Settings; ticket: Ticket; trigger?: Trigger; repositoryId?: string }) {
   const { ticket, trigger, ...rest } = input
   const values = { id: ticket.id, name: ticket.execution?.name ?? '', directory: ticket.execution?.directory ?? '' }
-  return environmentOf({ ...rest, ticket: values, ...trigger ? { trigger } : {} })
+  return environmentOf({ ...rest, ticket: values, repositoryId: ticket.repositoryId ?? undefined, ...trigger ? { trigger } : {} })
 }
 export function environmentLines(variables: Variable[]): string {
   return variables.map(variable => `- ${variable.key} = ${JSON.stringify(variable.value)}: ${variable.description.en}.`).join('\n')

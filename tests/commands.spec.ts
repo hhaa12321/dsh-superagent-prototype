@@ -8,53 +8,54 @@ import { githubChannel } from '../src/sources/github-trigger.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
 import { SettingsSchema } from '../src/policy.ts'
 import { key, type OutboundMessage } from '../src/core/index.ts'
-import { testDeployment } from './fixtures/deployment.ts'
-const sources = new SourceRegistry(() => SettingsSchema.parse({}))
+import { testDeployment, testCommands, githubRef, testRepository } from './fixtures/deployment.ts'
+const sources = new SourceRegistry(() => SettingsSchema.parse({}), undefined, undefined, sourceId => sourceId === 'github' ? testRepository : undefined)
 sources.register(feishuKind); sources.register(githubKind)
 const send = (commands: Commands, message: OutboundMessage) => sources.send(message, commands)
-const deployment = testDeployment({ github: { ...testDeployment().github, cli: '/path/agent-gh' } })
-const REPOSITORY = deployment.repository
-const reply = { id: 'stable-operation', channel: githubChannel(8), text: 'Done', kind: 'reply' as const }
+const agentGithub = { ...testDeployment().github, cli: '/path/agent-gh' }
+const deployment = testDeployment({ github: agentGithub, credentials: { 'github:github': agentGithub } })
+const REPOSITORY = testRepository.slug
+const reply = { id: 'stable-operation', channel: githubChannel(githubRef, 8), text: 'Done', kind: 'reply' as const }
 describe('account-isolated operations', () => {
   it('uses the agent account\'s GitHub CLI and preserves literal shell metacharacters in argv', async () => {
-    const commands = new Commands(() => deployment, {}, new AbortController().signal); const run = vi.spyOn(commands,'run').mockResolvedValue('{}')
+    const commands = testCommands(() => deployment); const run = vi.spyOn(commands,'run').mockResolvedValue('{}')
     await commands.gh(['api','some-path','-f','body=`whoami` $(touch x)'])
     expect(run).toHaveBeenCalledWith('/path/agent-gh', ['api','some-path','-f','body=`whoami` $(touch x)'])
   })
   it('runs every command with its environment over the process environment, where undefined removes a variable', async () => {
     process.env.GH_TOKEN = 'personal'
     try {
-      const output = await new Commands(() => deployment, { GH_TOKEN: undefined, DSH_SUPERAGENT_PROBE: 'agent' }, new AbortController().signal).run('env', [])
+      const output = await testCommands(() => deployment, { GH_TOKEN: undefined, DSH_SUPERAGENT_PROBE: 'agent' }).run('env', [])
       expect(output).toContain('DSH_SUPERAGENT_PROBE=agent')
       expect(output).not.toContain('GH_TOKEN=')
     } finally { delete process.env.GH_TOKEN }
   })
   it('refuses Feishu commands when the deployment has no Feishu bot', async () => {
-    await expect(new Commands(() => testDeployment({ feishu: undefined }), {}, new AbortController().signal).lark(['im', '+chat-list'])).rejects.toThrow('The Feishu Source has no working bot CLI')
+    await expect(testCommands(() => testDeployment({ feishu: undefined })).lark(['im', '+chat-list'])).rejects.toThrow('The Feishu Source has no working bot CLI')
   })
   it('reconciles an uncertain GitHub send with its stable marker', async () => {
-    const commands = new Commands(() => deployment, {}, new AbortController().signal)
+    const commands = testCommands(() => deployment)
     vi.spyOn(commands,'pages').mockResolvedValue([{ body:'<!-- dsh-superagent:stable-operation -->',user:{login:'agent-bot'} }])
     const gh = vi.spyOn(commands,'gh')
     await send(commands, reply); expect(gh).not.toHaveBeenCalled()
   })
   it('posts the reply as the model wrote it, only to the fixed repository', async () => {
-    const commands = new Commands(() => deployment, {}, new AbortController().signal); vi.spyOn(commands,'pages').mockResolvedValue([])
+    const commands = testCommands(() => deployment); vi.spyOn(commands,'pages').mockResolvedValue([])
     const gh = vi.spyOn(commands,'gh').mockResolvedValue({})
     await send(commands, reply)
     // The disclosure line is prompt text: the model writes it, and the host adds nothing.
     expect(gh).toHaveBeenCalledWith(['api',`repos/${REPOSITORY}/issues/8/comments`,'--method','POST','-f',expect.stringMatching(/^body=Done\n\n<!-- dsh-superagent:stable-operation -->$/)])
-    await expect(new Commands(() => deployment, {}, new AbortController().signal).pages(z.unknown(),
+    await expect(testCommands(() => deployment).pages(z.unknown(),
       '../../someone/else/issues')).rejects.toThrow()
   })
   it('routes review-comment replies to the root review comment', async () => {
-    const commands = new Commands(() => deployment, {}, new AbortController().signal); vi.spyOn(commands,'pages').mockResolvedValue([])
+    const commands = testCommands(() => deployment); vi.spyOn(commands,'pages').mockResolvedValue([])
     const gh = vi.spyOn(commands,'gh').mockResolvedValueOnce({ id: 7, in_reply_to_id: 3 }).mockResolvedValueOnce({})
-    await send(commands, { ...reply, channel: githubChannel(8, `https://github.com/${REPOSITORY}/pull/8#discussion_r7`) })
+    await send(commands, { ...reply, channel: githubChannel(githubRef, 8, `https://github.com/${REPOSITORY}/pull/8#discussion_r7`) })
     expect(gh.mock.calls[1]![0]).toEqual(['api', `repos/${REPOSITORY}/pulls/8/comments/3/replies`, '--method', 'POST', '-f', expect.stringContaining('Done')])
   })
   it('uses Feishu bot identity and one idempotency key on retries', async () => {
-    const commands = new Commands(() => deployment, {}, new AbortController().signal); const run = vi.spyOn(commands,'run').mockResolvedValue('{"ok":true,"data":{}}')
+    const commands = testCommands(() => deployment); const run = vi.spyOn(commands,'run').mockResolvedValue('{"ok":true,"data":{}}')
     await send(commands, { ...reply, channel: feishuChannel('oc_1', 'om_1') })
     expect(run.mock.calls[0]![1]).toEqual(expect.arrayContaining(['--as','bot','--idempotency-key','stable-operation','--message-id','om_1']))
   })
@@ -66,7 +67,7 @@ it('reports Feishu failures with their code and without command arguments', () =
   expect(commandError({stderr:JSON.stringify({error:{code:999,message:'scope missing'}})}).message).toBe('scope missing (999)')
 })
 describe('Channels', () => {
-  const commands = () => new Commands(() => deployment, {}, new AbortController().signal)
+  const commands = () => testCommands(() => deployment)
   const feishu = { ...reply, channel: feishuChannel('oc_1', 'om_1') }
   const lark = (code: number, message: string) => commandError({ stderr: JSON.stringify({ error: { code, message } }), code: 1 })
   it('drop a Feishu reply to a recalled message or one Feishu no longer finds, and say how to add the bot to a chat', async () => {
@@ -108,19 +109,19 @@ describe('Channels', () => {
     const pages = vi.spyOn(value, 'pages').mockResolvedValue([])
     const gh = vi.spyOn(value, 'gh')
       .mockRejectedValueOnce(commandError({ stderr: 'gh: Not Found (HTTP 404)', code: 1 })).mockResolvedValueOnce({})
-    expect(await send(value, { ...reply, channel: githubChannel(8, `https://github.com/${REPOSITORY}/pull/8#discussion_r7`) })).toBe('sent')
+    expect(await send(value, { ...reply, channel: githubChannel(githubRef, 8, `https://github.com/${REPOSITORY}/pull/8#discussion_r7`) })).toBe('sent')
     expect((pages.mock.calls[0] as unknown[])[1]).toBe('issues/8/comments')
     const post = ['api', `repos/${REPOSITORY}/issues/8/comments`, '--method', 'POST', '-f', expect.stringContaining('Done')]
     expect(gh.mock.calls[1]![0]).toEqual(post)
   })
   it('link each address to its page with its label', () => {
     const links = { repository: REPOSITORY, feishu: deployment.feishu! }
-    expect(githubKind.channel!.link(githubChannel(8).address, links)).toEqual({ url: `https://github.com/${REPOSITORY}/issues/8`,
+    expect(githubKind.channel!.link(githubChannel(githubRef, 8).address, links)).toEqual({ url: `https://github.com/${REPOSITORY}/issues/8`,
       label: { zh: 'GitHub #8', en: 'GitHub #8' } })
     const review = `https://github.com/${REPOSITORY}/pull/8#discussion_r7`
-    expect(githubKind.channel!.link(githubChannel(8, review).address, links))
+    expect(githubKind.channel!.link(githubChannel(githubRef, 8, review).address, links))
       .toEqual({ url: review, label: { zh: 'GitHub #8 的 review 讨论', en: 'Review discussion on GitHub #8' } })
-    expect(githubKind.channel!.link(githubChannel(8).address, {}).url).toBe('')
+    expect(githubKind.channel!.link(githubChannel(githubRef, 8).address, {}).url).toBe('')
     const message = feishuChannel('oc_1', 'om_1').address
     expect(feishuKind.channel!.link(message, links)).toEqual({ url: 'https://applink.feishu.cn/client/chat/open?openChatId=oc_1',
       label: { zh: '飞书消息', en: 'Feishu message' }, triggerId: key('feishu', 'om_1') })
@@ -128,7 +129,7 @@ describe('Channels', () => {
 })
 
 describe('GitHub calls', () => {
-  const commands = () => new Commands(() => deployment, {}, new AbortController().signal)
+  const commands = () => testCommands(() => deployment)
   it('go only to paths inside the configured repository, and validate what GitHub answers', async () => {
     const value = commands()
     const run = vi.spyOn(value, 'run').mockResolvedValue('{"number":12,"title":"Login fails","extra":true}')
@@ -136,7 +137,7 @@ describe('GitHub calls', () => {
     expect(run).toHaveBeenLastCalledWith('/path/agent-gh', ['api', `repos/${REPOSITORY}/issues/12`])
     await expect(value.api(z.looseObject({ number: z.string() }), 'issues/12')).rejects.toThrow()
     for (const path of ['../other/repo/issues', 'issues/../../x', '/repos/x/y', 'https://api.github.com/x']) {
-      await expect(value.api(z.unknown(), path)).rejects.toThrow('restricted to the configured repository')
+      await expect(value.api(z.unknown(), path)).rejects.toThrow('restricted to the bound repository')
     }
     expect(run).toHaveBeenCalledTimes(2)
     // An empty path targets the repository root.
@@ -161,7 +162,7 @@ describe('GitHub calls', () => {
   })
 })
 it('says how to add the bot to a chat when Feishu answers that it is not a member, and keeps the code', async () => {
-  const commands = new Commands(() => deployment, {}, new AbortController().signal)
+  const commands = testCommands(() => deployment)
   const membership = JSON.stringify({ error: { code: 232011, message: 'operator is not in the chat' } })
   const run = vi.spyOn(commands, 'run').mockRejectedValueOnce(commandError({ stderr: membership, code: 1 }))
   const hint = 'The Feishu bot is not a member of the chat. Add the bot in the chat settings, then retry.'
@@ -170,7 +171,7 @@ it('says how to add the bot to a chat when Feishu answers that it is not a membe
   await expect(commands.lark(['im', '+chat-members-list'])).rejects.toMatchObject({ message: hint, code: 232011 })
 })
 it('names only the program and how it ended when a command prints no diagnostics, never its arguments', async () => {
-  const commands = new Commands(() => deployment, {}, new AbortController().signal)
+  const commands = testCommands(() => deployment)
   const secret = 'secret reply text'
   await expect(commands.run('sh', ['-c', 'exit 3', secret])).rejects.toMatchObject({ message: 'sh exited with code 3', exitCode: 3 })
   await expect(commands.run('sh', ['-c', 'kill -9 $$', secret])).rejects.toMatchObject({ message: 'sh was stopped by SIGKILL' })
@@ -191,17 +192,17 @@ it('reports failures as CliError with the code the CLI names and the exit status
   const aborted = Object.assign(new Error('The operation was aborted'), { name: 'AbortError', stderr: '' })
   expect(commandError(aborted)).toBe(aborted)
   const controller = new AbortController()
-  const running = new Commands(() => deployment, {}, controller.signal).run('sleep', ['5'])
+  const running = testCommands(() => deployment, {}, controller.signal).run('sleep', ['5'])
   controller.abort()
   await expect(running).rejects.toMatchObject({ name: 'AbortError' })
-  const commands = new Commands(() => deployment, {}, new AbortController().signal)
+  const commands = testCommands(() => deployment)
   vi.spyOn(commands, 'run').mockResolvedValue(JSON.stringify({ ok: false, error: { code: 231003, message: 'message not found' } }))
   await expect(commands.lark(['im', '+messages-reply'])).rejects.toMatchObject({ message: 'message not found (231003)', code: 231003 })
 })
 
 it('stops a running command when the signal of its work aborts, or the lifetime, and leaves the other work running', async () => {
   const lifetime = new AbortController(), work = new AbortController()
-  const commands = new Commands(() => deployment, {}, lifetime.signal)
+  const commands = testCommands(() => deployment, {}, lifetime.signal)
   const started = Date.now()
   const running = commands.withSignal(work.signal).run('sleep', ['5'])
   work.abort()

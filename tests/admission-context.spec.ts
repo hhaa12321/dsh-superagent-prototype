@@ -5,7 +5,7 @@ import { feishuKind } from '../src/sources/feishu.ts'
 import type { ContextMessage } from '../src/sources/kind.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
 import { SettingsSchema } from '../src/policy.ts'
-import { testDeployment } from './fixtures/deployment.ts'
+import { testDeployment, testCommands } from './fixtures/deployment.ts'
 import type { Trigger } from '../src/core/index.ts'
 const message = (index: number): ContextMessage => ({ id: `om_${index}`, from: 'ou_user', at: String(index), text: `Message ${index}` })
 /** The same message as a Feishu topic page lists it. */
@@ -24,7 +24,7 @@ it('deduplicates overlapping windows and reports an absent source without invent
   expect(threadWindow(messages, 'om_absent')).toMatchObject({ source_found: false, loaded_messages: 12, omitted_after: 7 })
 })
 it('retains pagination limits and exact loaded counts rather than claiming complete history', async () => {
-  const commands = new Commands(() => testDeployment(), {}, new AbortController().signal)
+  const commands = testCommands(() => testDeployment())
   const lark = vi.spyOn(commands, 'lark').mockResolvedValueOnce({ items: [{ message_id: 'om_9', chat_id: 'oc_chat', thread_id: 'omt_thread' }] })
     .mockResolvedValueOnce({ thread_id: 'omt_thread', messages: [listed(0), listed(1)], has_more: true, page_token: 'next' })
   const trigger: Trigger = { id: 'event', source: 'feishu', threads: [{ source: 'feishu', id: 'oc_chat:om_9' }], actor: { source: 'feishu', id: 'ou_user' }, human: true, text: 'Trigger', at: '', meta: { chatId: 'oc_chat', messageId: 'om_9', direct: false, mentioned: false } }
@@ -36,7 +36,7 @@ it('retains pagination limits and exact loaded counts rather than claiming compl
   expect(lark.mock.calls[1]![0]).toEqual(expect.arrayContaining(['--page-size', '2']))
 })
 it('gives a message outside a topic the five chat messages before it, and says it read the chat', async () => {
-  const commands = new Commands(() => testDeployment(), {}, new AbortController().signal)
+  const commands = testCommands(() => testDeployment())
   const at = Date.parse('2026-09-11T12:00:00Z')
   const item = (n: number) => ({ message_id: `om_${n}`, chat_id: 'oc_chat', create_time: String(at + n * 1000), sender: { id: 'ou_user', sender_type: 'user' },
     body: { content: JSON.stringify({ text: `message ${n}` }) } })

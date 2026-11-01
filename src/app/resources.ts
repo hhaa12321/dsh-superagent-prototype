@@ -61,6 +61,8 @@ export interface ResourceHost {
   readonly pages: TextCache
   readonly prompts: Pick<Prompts, 'current' | 'version' | 'history' | 'skills' | 'defaultChanged'>
   readonly commands: Commands
+  /** Commands scoped to a repository: the ticket's binding, or one unambiguous enabled binding for the main Session. */
+  commandsFor(repositoryId?: string): Commands
   readonly masterId: string
   readonly context: Context
   promptVersion(sessionId: string): PromptVersion
@@ -206,7 +208,12 @@ const ROUTES: readonly Route[] = [
     const commands = read.host.commands.withSignal(read.signal)
     return sourcePage(read, 'feishu', () => feishuRead(commands, ref, read.resource, read.host.feishuPageSize()))
   }],
-  ['github/', read => sourcePage(read, 'github', () => readGithub(read.host.commands.withSignal(read.signal), read.resource))],
+  ['github/', read => {
+    const ticket = read.ticketId ? read.host.store.tickets.get(read.ticketId) : undefined
+    // A worker reads only its ticket's repository; the main Session may use the single unambiguous binding for context.
+    if (read.ticketId && !ticket?.repositoryId) throw new Error('This ticket has no repository binding')
+    return sourcePage(read, 'github', () => readGithub(read.host.commandsFor(ticket?.repositoryId ?? undefined).withSignal(read.signal), read.resource))
+  }],
   ['trigger/', async read => {
     const { host, rest, ticketId, offset, signal } = read
     if (!rest || rest.includes('/')) throw new Error('Unknown context resource')

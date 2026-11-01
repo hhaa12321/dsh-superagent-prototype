@@ -1,9 +1,9 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { Commands } from '../src/infra/commands.ts'
-import { testDeployment } from './fixtures/deployment.ts'
+import { testDeployment, testCommands } from './fixtures/deployment.ts'
 import { readGithub, pullChecks } from '../src/sources/github-read.ts'
 
-const commands = new Commands(() => testDeployment(), {}, new AbortController().signal)
+const commands = testCommands(() => testDeployment())
 afterEach(() => vi.restoreAllMocks())
 
 it('reads a bounded comment page and exposes the next page reference', async () => {

@@ -1,9 +1,9 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { Commands } from '../src/infra/commands.ts'
-import { testDeployment } from './fixtures/deployment.ts'
+import { testDeployment, testCommands } from './fixtures/deployment.ts'
 import { feishuRead, readFeishu, feishuReferences, readFeishuLink } from '../src/sources/feishu-read.ts'
 import type { FeishuRef } from '../src/sources/feishu-read.ts'
-const commands = new Commands(() => testDeployment(), {}, new AbortController().signal)
+const commands = testCommands(() => testDeployment())
 const event: FeishuRef = { triggerId: 'source', chatId: 'oc_chat', messageId: 'om_source' }
 const source = { message_id: 'om_source', chat_id: 'oc_chat', parent_id: 'om_parent', root_id: 'om_root', thread_id: 'omt_thread' }
 const message = { message_id: 'om_root', chat_id: 'oc_chat', msg_type: 'merge_forward', content: '<forwarded_messages>Earlier discussion ![Image](img_one)</forwarded_messages>', sender: { id: 'ou_user', name: 'User', sender_type: 'user' }, create_time: '2026-09-11 12:00' }

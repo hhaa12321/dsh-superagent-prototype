@@ -1,25 +1,40 @@
 /** Probes repository and account CLIs, configures the worker execution environment and command shims, and tracks setup readiness. */
 import type { Context } from '@deepseek-ai/cordis'
 import { UserError } from '../core/index.ts'
-import { SETUP_FIELDS, resolveDeployment, resolveFeishuBot, workerProbe, type Deployment, type Machine } from '../deployment.ts'
+import { SETUP_FIELDS, resolveDeployment, resolveFeishuBot, workerProbe, type Deployment, type GithubSourceInput, type Machine } from '../deployment.ts'
 import { agentVariables, applyEnvironment, verifyEnvironment, withoutDirectory, workerBin, writeEnvironment } from '../infra/environment.ts'
 import type { Settings, SettingsBlock } from '../policy.ts'
+import type { Store } from './store.ts'
 import { SetupError, type SetupProblem } from '../setup.ts'
 
 export interface SetupHost {
   readonly context: Context
   readonly machine: Machine
   readonly lifetime: AbortSignal
+  /** Persists resolved RepositoryBindings and the one-to-one Source instance mapping. */
+  readonly store: Pick<Store, 'repositories' | 'atomic'>
   restart(): void
 }
 
-const setupFields = (settings: Settings) =>
-  JSON.stringify(Object.entries(SETUP_FIELDS).map(([id, keys]) => keys.map(key => settings.sources[id]?.config[key] ?? '')))
+/** The setup-read fields of every configured Source instance, by instance ID, so moving or renaming one is noticed. */
+const setupFields = (settings: Settings): string => JSON.stringify(Object.entries(settings.sources).flatMap(([id, source]) => {
+  const keys = SETUP_FIELDS[source.kind ?? id]
+  return keys ? [[id, keys.map(key => source.config[key] ?? '')]] : []
+}).sort(([a], [b]) => String(a).localeCompare(String(b))))
 export const setupChanged = (before: Settings, after: Settings): boolean => setupFields(before) !== setupFields(after)
 
+/** The configured GitHub instances setup resolves; the canonical `github` instance exists even when none is stored. */
+function githubSources(settings: Settings): GithubSourceInput[] {
+  const stored = Object.entries(settings.sources).filter(([id, source]) => (source.kind ?? id) === 'github')
+  const entries: [string, Settings['sources'][string] | undefined][] = stored.length ? stored : [['github', settings.sources.github]]
+  return entries.map(([sourceId, source]) => ({ sourceId, kind: 'github', enabled: source?.enabled ?? true, config: source?.config ?? {} }))
+}
+
 /**
- * Resolves the target repository, GitHub account, and optional Feishu bot by probing CLIs, then writes and applies the isolated git and shim environment used by worker processes.
- * `Runtime` runs it at startup to gate orchestration readiness, while `Settings` uses it to validate account changes, update blocked command shims, and schedule restarts.
+ * Resolves the target repositories, GitHub account, and optional Feishu bot by probing CLIs, then writes and applies the
+ * isolated git and shim environment used by worker processes.
+ * `Runtime` runs it at startup to gate orchestration readiness, while `Settings` uses it to validate account changes, update
+ * blocked command shims, and schedule restarts. Repository identity is persisted as a RepositoryBinding before readiness.
  */
 export class Setup {
   private resolved?: Deployment
@@ -41,7 +56,7 @@ export class Setup {
     return this.resolved
   }
   configured(): boolean { return this.resolved !== undefined }
-  /** Resolve deployment accounts and apply the worker environment, recording `SetupError` failures in `problem`/`feishuProblem` and rethrowing unexpected errors. */
+  /** Resolve deployment accounts and RepositoryBindings and apply the worker environment, recording `SetupError` failures in `problem`/`feishuProblem` and rethrowing unexpected errors. */
   async run(settings: Settings): Promise<boolean> {
     try { this.resolved = await this.resolve(settings); return true }
     catch (error) {
@@ -60,9 +75,12 @@ export class Setup {
   /** Verify account CLIs for a modified source block before saving, ignoring setup errors belonging to other blocks. */
   async checkAccounts(block: SettingsBlock, settings: Settings): Promise<void> {
     const { machine } = this.host
-    const check = block === 'source:feishu' ? resolveFeishuBot(machine, settings.sources.feishu?.config, this.probe())
-      : resolveDeployment(machine, settings.sources.github?.config, this.probe())
-    await check.catch((error: unknown) => { if (!(error instanceof SetupError) || error.place === block.slice(7)) throw error })
+    const id = block.startsWith('source:') ? block.slice('source:'.length) : undefined
+    const source = id === undefined ? undefined : settings.sources[id]
+    const kind = source?.kind ?? id
+    const check = kind === 'feishu' ? resolveFeishuBot(machine, source?.config, this.probe())
+      : resolveDeployment(machine, githubSources(settings), this.probe())
+    await check.catch((error: unknown) => { if (!(error instanceof SetupError) || error.place === id || error.place === kind) throw error })
   }
   async blockCommands(blocked: readonly string[]): Promise<void> {
     if (this.resolved) await writeEnvironment(this.resolved, blocked)
@@ -76,12 +94,20 @@ export class Setup {
   private async resolve(settings: Settings): Promise<Deployment> {
     const { context, machine, lifetime } = this.host
     const probe = this.probe()
-    const deployment = await resolveDeployment(machine, settings.sources.github?.config, probe)
+    const deployment = await resolveDeployment(machine, githubSources(settings), probe)
     const feishu = await resolveFeishuBot(machine, settings.sources.feishu?.config, probe).catch((error: unknown) => {
       if (!(error instanceof SetupError)) throw error
       this.feishuProblem = error.problem
       context.logger.warn('dsh-superagent leaves Feishu out: %s', error.message)
       return undefined
+    })
+    // Persist the provider-resolved bindings and the one-to-one Source mapping before any Ticket can be accepted.
+    this.host.store.atomic(() => {
+      for (const binding of deployment.repositories) this.host.store.repositories.save(binding)
+      for (const source of githubSources(settings)) {
+        const binding = deployment.repositories.find(item => item.credentialId === `github:${source.sourceId}`)
+        this.host.store.repositories.bind(source.sourceId, binding?.id)
+      }
     })
     const resolved = { ...deployment, ...(feishu ? { feishu } : {}) }
     const machineProblem = (error: unknown): never => {

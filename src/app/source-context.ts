@@ -3,8 +3,8 @@ import type { EngineForSources, ReceiveResult, Trigger } from '../core/index.ts'
 import type { Deployment } from '../deployment.ts'
 import type { Commands } from '../infra/commands.ts'
 import type { SetupProblem } from '../setup.ts'
+import { healthKey, type SourceRegistry } from '../sources/registry.ts'
 import type { SourceContext } from '../sources/host.ts'
-import type { SourceRegistry } from '../sources/registry.ts'
 import type { Outbox } from './outbox.ts'
 import type { Store } from './store.ts'
 
@@ -27,21 +27,25 @@ export interface SourceContextDeps {
 }
 
 /**
- * Builds the context for one Source kind. Health reports are restricted to entries declared by the kind and
- * bound to the active registration, becoming no-ops once unregistered.
+ * Builds the context for one Source instance. Health reports are restricted to entries declared by the kind, namespaced
+ * by `sourceId`, and bound to the active registration, becoming no-ops once unregistered. Commands are scoped to the
+ * instance's RepositoryBinding when it has one, so no repository-bound Source can fall back to another repository.
  */
-export function sourceContextOf(deps: SourceContextDeps, kind: { kind: string; health: readonly string[] }): SourceContext {
+export function sourceContextOf(deps: SourceContextDeps, kind: { kind: string; health: readonly string[] }, sourceId = kind.kind): SourceContext {
   const { store } = deps
-  const health = deps.sources.healthEntries(kind.health)
+  const repository = deps.sources.bindingOf(sourceId)
+  const health = deps.sources.healthEntries(sourceId, kind.health)
   return {
+    sourceId,
+    repository,
     get deployment() { return deps.deployment },
-    commands: deps.commands,
+    commands: repository ? deps.commands.withRepository(repository) : deps.commands,
     ready: deps.ready,
     configured: () => deps.configured(),
     get problem() { return [deps.feishuProblem, deps.setupProblem].find(problem => problem?.place === kind.kind) },
-    config: <C extends Record<string, unknown>>(id: string) => {
-      const instance = deps.sources.instance<C>(id)
-      return instance?.enabled ? instance.config : undefined
+    config: <C extends Record<string, unknown>>() => {
+      const current = deps.sources.instance(sourceId)
+      return current?.enabled ? current.config as C : undefined
     },
     receive: trigger => deps.receive(trigger),
     atomic: work => store.atomic(work),
@@ -70,3 +74,4 @@ export function sourceContextOf(deps: SourceContextDeps, kind: { kind: string; h
     },
   }
 }
+export { healthKey }

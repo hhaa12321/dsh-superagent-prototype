@@ -1,3 +1,4 @@
+import { githubRef } from './deployment.ts'
 /**
  * Typed fake management API server for panel tests. Implements every route in `src/app/api.ts` and records any
  * undeclared query parameter or body mismatch in `server.misuse`, which `usePanelServer` asserts is empty after each test.
@@ -72,7 +73,7 @@ export const promptVersion = (revision: number, config: PromptsView['current']['
 export const droppedReply = (id: string, hoursAgo: number, source: 'feishu' | 'github', reason: DroppedReply['dropped']['reason'],
   { ticket, thread }: { ticket?: DroppedReply['ticket']; thread?: false } = {}): DroppedReply => ({
   id, preview: `Reply ${id}`, kind: 'reply',
-  channel: source === 'feishu' ? feishuChannel('oc_1', 'om_root') : githubChannel(42),
+  channel: source === 'feishu' ? feishuChannel('oc_1', 'om_root') : githubChannel(githubRef, 42),
   dropped: { at: new Date(Date.now() - hoursAgo * 3_600_000).toISOString(), reason }, ...ticket ? { ticket } : {},
   ...thread === false ? {} : { thread: source === 'feishu' ? 'feishu:oc_1:om_root' : 'github:42' },
 })
@@ -113,8 +114,10 @@ export let server: PanelServer
 
 function resolved() {
   const accounts = server.setup.accounts
-  return accounts ? testDeployment({ repository: accounts.repository, github: { cli: '/bin/false', login: accounts.agent, noreply: '' },
-    ...accounts.feishu ? { feishu: { cli: '/bin/false', ...accounts.feishu } } : { feishu: undefined } }) : undefined
+  if (!accounts) return undefined
+  const github = { cli: '/bin/false', login: accounts.agent, noreply: '' }
+  return testDeployment({ github, credentials: { 'github:github': github },
+    ...accounts.feishu ? { feishu: { cli: '/bin/false', ...accounts.feishu } } : { feishu: undefined } })
 }
 /** Default source health: paused during setup; Feishu defaults to `socket closed` unless overridden or paused by setup. */
 function healthOf(name: string): Health {
@@ -249,7 +252,8 @@ function initial(): PanelServer {
   return {
     health: {}, down: false, pending: 0, opened: [], requests: [], misuse: [], queued: new Set(), dropped: [], failing: [],
     setup: { machine: MACHINE, problem: null, feishuProblem: null,
-      accounts: { repository: 'acme/widgets', agent: 'agent-bot', feishu: { appId: 'cli_bot', brand: 'feishu', botId: 'ou_bot',
+      accounts: { repository: 'acme/widgets', repositories: [{ id: 'github:101', provider: 'github', slug: 'acme/widgets',
+        webUrl: 'https://github.com/acme/widgets', enabled: true }], agent: 'agent-bot', feishu: { appId: 'cli_bot', brand: 'feishu', botId: 'ou_bot',
         name: 'Widgets Bot' } } },
     settings, revisions: { policy: 3, eval: 1, executor: 0 },
     prompts: { masterId: 'master', sections: TEAM_SECTIONS, skillName: SKILL_NAME.source, builtin: ['feishu', 'github'],

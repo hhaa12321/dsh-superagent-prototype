@@ -135,7 +135,7 @@ export function subagentRuntime(agents: Map<string, FakeAgent>) {
 export async function startRuntime(seed?: (store: Store) => void) {
   const directory = mkdtempSync(join(tmpdir(), 'orchestrator-host-'))
   const AGENT = join(directory, 'agent-gh'), BOT = join(directory, 'lark-bot')
-  const repository = { default_branch: 'master', permissions: { push: true } }
+  const repository = { id: 101, name: 'acme/widgets', url: 'https://github.com/acme/widgets', default_branch: 'master', permissions: { push: true } }
   vi.spyOn(Commands.prototype, 'gh').mockImplementation(async args => args[1] === 'user' ? { login: 'agent-bot' } : repository)
   vi.spyOn(Commands.prototype, 'lark').mockResolvedValue({ users: [{ member_id: MEMBER, name: 'Alice' }], has_more: false })
   vi.spyOn(Commands.prototype, 'git').mockResolvedValue('')
@@ -143,7 +143,7 @@ export async function startRuntime(seed?: (store: Store) => void) {
   const scoped = 'git config -z --show-scope --get-regexp ^(credential\\..*|http\\..*extraheader)$'
   const answers: Record<string, string> = {
     [`${AGENT} api user`]: '{"login":"agent-bot","id":7}',
-    [`${AGENT} api repos/acme/widgets --jq {name: .full_name, push: .permissions.push}`]: '{"name":"acme/widgets","push":true}\n',
+    [`${AGENT} api repos/acme/widgets --jq {id, name: .full_name, url: .html_url, push: .permissions.push}`]: '{"id":101,"name":"acme/widgets","url":"https://github.com/acme/widgets","push":true}\n',
     [`${BOT} auth status`]: JSON.stringify({ appId: 'cli_bot', brand: 'feishu', identities: { bot: { status: 'ready' } } }),
     [`${BOT} config strict-mode`]: 'strict-mode: bot (source: profile)',
     [`${BOT} api GET /open-apis/bot/v3/info --as bot --format ndjson`]: '{"bot":{"open_id":"ou_bot"},"code":0,"msg":"ok"}',

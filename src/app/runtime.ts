@@ -18,6 +18,7 @@ import { allowedSender, settingsPolicy } from '../policy.ts'
 import { SourceRegistry } from '../sources/registry.ts'
 import { Commands } from '../infra/commands.ts'
 import type { Deployment, Machine } from '../deployment.ts'
+import type { RepositoryBinding } from '../repository.ts'
 import { environmentOf, ticketEnvironment, type Variable } from './execution-environment.ts'
 import type { SetupProblem } from '../setup.ts'
 import { DshExecutor, sourceTrigger, triggerMessage, workerSessionId } from '../executor/dsh.ts'
@@ -96,9 +97,13 @@ export class Runtime extends Service implements SourceHost {
     try {
       const report = (error: unknown) => { ctx.logger.warn('dsh-superagent: %s', String(error)) }
       const store = opened = this.store = new Store(join(machine.stateDir, 'orchestrator.sqlite'), report)
-      const setup = this.setup = new Setup({ context: ctx, machine, lifetime: this.lifetime, restart })
+      const setup = this.setup = new Setup({ context: ctx, machine, lifetime: this.lifetime, restart, store })
       const deployed = () => setup.configured()
         ? environmentOf({ deployment: setup.deployment, sources: this.sources, settings: store.settings() }) : undefined
+      const binding = (sourceId: string): RepositoryBinding | undefined => {
+        const id = store.repositories.ofSource(sourceId)
+        return id ? store.repositories.get(id) : undefined
+      }
       const feishu = () => setup.configured() && !!setup.deployment.feishu
       const prompts = this.prompts = new Prompts(store, () => machine.promptMaxChars.get(), deployed, feishu)
       const masterId = this.masterId = store.get(KV.runtime.masterId) ?? `orchestrator-${key(machine.stateDir)}`
@@ -111,11 +116,12 @@ export class Runtime extends Service implements SourceHost {
         if (kind.policy?.sync) void this.ready?.then(() => this.settings.syncable().includes(kind.kind) ? this.settings.sync(kind.kind) : undefined)
           .catch(() => { /* sync() records its failure in health. */ })
         return () => {}
-      })
+      }, binding)
       const links: LinkHost = { store, links: this.sourceLinks, commands, sources, lifetime: this.lifetime }
       const link = (trigger: Trigger, signal?: AbortSignal) => sourceLink(links, trigger, signal)
       const environment = (ticket: Ticket) => this.ticketEnvironment(ticket)
       const resources: ResourceHost = { store, pages: new TextCache(4_000_000), prompts, commands, masterId, context: ctx,
+        commandsFor: (repositoryId?: string) => this.commandsFor(repositoryId),
         promptVersion: id => this.sessions.promptVersion(id), mayRead: (id, revision) => this.sessions.mayRead(id, revision),
         feishuPageSize: () => feishuSettings(sources).readPageSize, sourceLink: link }
       const sessions = this.sessions = new Sessions({ context: ctx, store, prompts, effects, health: board.claim('models'), masterId,
@@ -130,12 +136,21 @@ export class Runtime extends Service implements SourceHost {
         repliedTo: trigger => repliedTo({ store, sources }, trigger) })
       this.assessor = new MasterAssessor({ get engine() { return runtime.engine }, commands, get deployment() { return setup.deployment }, effects,
         settings: () => store.settings(), paused: () => this.paused(), threadContext: trigger => sources.threadContext(trigger),
+        commandsFor: trigger => trigger.repositoryId ? commands.withRepository(store.repositories.get(trigger.repositoryId)) : commands,
         deliver: (id, text) => sessions.prompt(masterId, id, text, 'steer'), candidateCard: candidate => candidateCard(links, candidate) })
       const outbox = this.outbox = new Outbox({ store, effects, sources, commands, paused: () => this.paused() })
       const { assessor, executor } = this
       const policy = () => settingsPolicy(store.settings(), sources)
       const engine = this.engine = new Engine({ repo: store, scope: sources, policy, assessor, executor,
-        outbox, prepareTicket: (ticket, outcome) => executor.prepare(ticket, outcome), emit: event => {
+        outbox, prepareTicket: (ticket, outcome) => executor.prepare(ticket, outcome),
+        // Acceptance binds a repository-less request to the one enabled binding, and records it on the ticket.
+        repositoryFor: () => {
+          const enabled = store.repositories.list().filter(binding => binding.enabled)
+          return enabled.length === 1 ? enabled[0]!.id : null
+        },
+        // A Thread reference resolves its Source instance's binding before the Thread exists, so a worker cannot follow another repository's Thread.
+        threadRepository: ref => sources.bindingOf(ref.source)?.id ?? ref.repositoryId ?? null,
+        emit: event => {
           // Notify the main Session only about domain events it did not initiate itself.
           const notice = this.quiet ? undefined : eventNotice(event, id => store.tickets.get(id))
           if (notice) sessions.notify(...notice)
@@ -148,7 +163,8 @@ export class Runtime extends Service implements SourceHost {
           const ended = event.type === 'ticket.ended' ? store.tickets.get(event.data.ticketId) : undefined
           if (ended && setup.configured()) {
             const request = store.triggers.get(ended.origin.triggerId)?.text ?? ''
-            for (const message of pullEndNotices(ended, request, setup.deployment.repository)) outbox.send(message)
+            const repository = ended.repositoryId ? store.repositories.get(ended.repositoryId)?.slug ?? '' : ''
+            for (const message of pullEndNotices(ended, request, repository)) outbox.send(message)
           }
         } })
       // Update the `evals` health entry on every pass if an evaluation failed as unavailable within the last hour.
@@ -160,7 +176,7 @@ export class Runtime extends Service implements SourceHost {
         get deployment() { return setup.deployment }, configured: () => setup.configured(),
         get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem }, receive: trigger => passes.receive(trigger) }
       this.toolHost = { context: ctx, engine, store, prompts, sessions, settings: this.settings, assessor, resources,
-        get github() { return runtime.context({ kind: 'github', health: ['github'] }) },
+        github: ticket => runtime.githubContext(ticket),
         requestPass: () => { passes.request() }, sendReplies: () => outbox.sent(),
         quietly: run => { this.quiet++; try { return run() } finally { this.quiet-- } } }
       this.ready = this.initialize()
@@ -173,7 +189,32 @@ export class Runtime extends Service implements SourceHost {
   get health(): Readonly<Record<string, Health>> { return this.board.all }
   /** Aborted when dsh-superagent stops or loses its state directory lock, cancelling running reads and subprocesses. */
   get lifetime(): AbortSignal { return this.stopped.signal }
-  context(kind: { kind: string; health: readonly string[] }): SourceContext { return sourceContextOf(this.sourceDeps, kind) }
+  context(kind: { kind: string; health: readonly string[] }, sourceId?: string): SourceContext {
+    return sourceContextOf(this.sourceDeps, kind, sourceId)
+  }
+  /** The GitHub Source context scoped to a ticket's RepositoryBinding; the ticket's own binding is never replaced. */
+  githubContext(ticket: Ticket): SourceContext {
+    if (!ticket.repositoryId) throw new Error('This ticket has no repository binding')
+    return this.contextForRepository(ticket.repositoryId)
+  }
+  contextForRepository(repositoryId: string): SourceContext {
+    const source = this.store.repositories.sources().find(item => item.repositoryId === repositoryId)
+    const instance = source && this.sources.instance(source.sourceId)
+    const kind = instance && this.sources.kind(instance.kind)
+    if (!source || !instance || !kind) throw new Error(`No installed Source instance is bound to repository ${repositoryId}`)
+    return this.context(kind, source.sourceId)
+  }
+  /** Commands scoped to a repository; without an ID, only an unambiguous single enabled binding is used. */
+  commandsFor(repositoryId?: string): Commands {
+    if (repositoryId) {
+      const binding = this.store.repositories.get(repositoryId)
+      if (!binding) throw new Error(`Unknown repository binding ${repositoryId}`)
+      return this.commands.withRepository(binding)
+    }
+    const enabled = this.store.repositories.list().filter(binding => binding.enabled)
+    if (enabled.length === 1) return this.commands.withRepository(enabled[0])
+    throw new Error(enabled.length ? 'Select a repository binding for this GitHub read' : 'No repository binding is enabled')
+  }
   /** Resolved deployment; throws while waiting for setup (`!configured()`). */
   get deployment(): Deployment { return this.setup.deployment }
   configured(): boolean { return this.setup.configured() }
@@ -182,13 +223,17 @@ export class Runtime extends Service implements SourceHost {
   get feishuProblem(): SetupProblem | undefined { return this.setup.feishuProblem }
   links(): LinkTarget {
     const resolved = this.setup.configured() ? this.setup.deployment : undefined
-    const links = resolved ? { repository: resolved.repository, ...(resolved.feishu ? { feishu: resolved.feishu } : {}) } : {}
-    return channel => this.sources.link(channel, links)
+    return channel => {
+      const binding = channel.repositoryId ? this.store.repositories.get(channel.repositoryId) : undefined
+      const links = resolved ? { ...(binding ? { repository: binding.slug } : {}), ...(resolved.feishu ? { feishu: resolved.feishu } : {}) } : {}
+      return this.sources.link(channel, links)
+    }
   }
   ticketEnvironment(ticket: Ticket): Variable[] {
     const trigger = sourceTrigger(this, ticket)
     const { setup: { deployment }, sources } = this
-    return ticketEnvironment({ deployment, sources, settings: this.store.settings(), ticket, ...trigger ? { trigger } : {} })
+    return ticketEnvironment({ deployment, sources, settings: this.store.settings(), ticket, repositoryId: ticket.repositoryId ?? undefined,
+      ...trigger ? { trigger } : {} })
   }
   checkSetup(): void { this.setup.check() }
   receive(trigger: Trigger): ReceiveResult { return this.passes.receive(trigger) }

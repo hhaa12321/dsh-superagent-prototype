@@ -9,7 +9,7 @@ import { Commands } from '../src/infra/commands.ts'
 import { HealthBoard } from '../src/infra/health.ts'
 import { sourceContextOf, type SourceContextDeps } from '../src/app/source-context.ts'
 import { feishuChannel, feishuTrigger, feishuTriggerId } from '../src/sources/feishu-trigger.ts'
-import { testDeployment } from './fixtures/deployment.ts'
+import { testDeployment, testCommands } from './fixtures/deployment.ts'
 import { feishuKind } from '../src/sources/feishu.ts'
 import { githubKind } from '../src/sources/github.ts'
 
@@ -26,15 +26,15 @@ describe('Source registry', () => {
     sources.register(probe); sources.register(githubKind)
     expect(sources.instances()).toEqual([
       { id: 'github', kind: 'github', enabled: true, config: { repository: '', cli: '', pollSeconds: 60, failuresBeforeError: 3,
-        observeIssues: false, observePulls: false, observeComments: false, observeCi: false }, installed: true },
-      { id: 'probe', kind: 'probe', enabled: false, config: { interval: 9 }, installed: true },
-      { id: 'retired', kind: 'retired', enabled: true, config: { x: 1 }, installed: false },
+        observeIssues: false, observePulls: false, observeComments: false, observeCi: false }, repositoryId: null, installed: true },
+      { id: 'probe', kind: 'probe', enabled: false, config: { interval: 9 }, repositoryId: null, installed: true },
+      { id: 'retired', kind: 'retired', enabled: true, config: { x: 1 }, repositoryId: null, installed: false },
     ])
   })
   it('validates submitted instances with the kind schema and refuses kinds that are not installed', () => {
     const sources = new SourceRegistry(() => SettingsSchema.parse({}))
     sources.register(probe)
-    expect(sources.validate('probe', { enabled: true, config: {} })).toEqual({ enabled: true, config: { interval: 5 } })
+    expect(sources.validate('probe', { enabled: true, config: {} })).toEqual({ kind: 'probe', enabled: true, config: { interval: 5 } })
     expect(() => sources.validate('probe', { enabled: true, config: { interval: 0 } })).toThrow()
     expect(() => sources.validate('missing', { enabled: true, config: {} })).toThrow('not installed')
   })
@@ -73,30 +73,32 @@ describe('Source registry', () => {
     expect(await sources.send(message('quiet'), commands)).toBe('gone')
     expect(sources.threadContext({ ...trigger, source: 'quiet' })).toBeUndefined()
   })
-  it('refuses a kind that declares a health entry another kind or dsh-superagent itself reports, and gives up its entries at unregister', () => {
+  it('keeps each Source instance\'s health entries apart and gives them up at unregister', () => {
     const board = new HealthBoard()
-    // Pre-claim built-in health entries; sync:* entries are reserved for settings sync.
-    for (const name of ['runtime', 'reply']) board.claim(name)
     const sources = new SourceRegistry(() => SettingsSchema.parse({}), board)
     const unregister = sources.register(githubKind)
-    expect(() => sources.register({ ...probe, health: ['github'] })).toThrow('declares the health entry github')
-    for (const name of ['runtime', 'reply', 'sync:github']) expect(() => sources.register({ ...probe, health: ['probe', name] })).toThrow(name)
-    expect(sources.kind('probe')).toBeUndefined()
-    sources.register({ ...probe, health: ['probe'] })
+    // Two kinds may declare the same entry name: the registry namespaces it by Source instance.
+    sources.register({ ...probe, health: ['github'] })
+    // `sync:` entries belong to Settings, whichever instance would report them.
+    for (const name of ['sync:github', 'sync:probe']) expect(() => sources.register({ ...probe, kind: 'probe2', health: [name] })).toThrow(name)
     const context = (kind: { kind: string; health: readonly string[] }) => sourceContextOf({ sources } as unknown as SourceContextDeps, kind)
     const first = context(githubKind)
+    const second = context({ ...probe, health: ['github'] })
     first.report('github', { state: 'ready', detail: 'ok' })
-    expect(board.all.github).toEqual({ state: 'ready', detail: 'ok' })
+    second.report('github', { state: 'error', detail: 'probe error' })
+    expect(board.all['github:github']).toEqual({ state: 'ready', detail: 'ok' })
+    expect(board.all['github:probe']).toEqual({ state: 'error', detail: 'probe error' })
     expect(() => first.report('probe', { state: 'ready', detail: '' })).toThrow('has no health entry probe')
     // A report sent after its kind unregisters (such as from an exiting CLI listener) is ignored and does not affect a later registration.
     unregister()
     expect(() => first.report('github', { state: 'error', detail: 'WARN exiting' })).not.toThrow()
-    expect(board.all.github).toBeUndefined()
+    expect(board.all['github:github']).toBeUndefined()
     sources.register(githubKind)
+    // The old context's entries stay released; a fresh context claims them again.
     first.report('github', { state: 'error', detail: 'late' })
-    expect(board.all.github).toEqual({ state: 'starting', detail: '' })
+    expect(board.all['github:github']).toBeUndefined()
     context(githubKind).report('github', { state: 'ready', detail: 'again' })
-    expect(board.all.github).toEqual({ state: 'ready', detail: 'again' })
+    expect(board.all['github:github']).toEqual({ state: 'ready', detail: 'again' })
   })
   it('names the Trigger whose message a Trigger\'s message answers, where its kind can', () => {
     const sources = new SourceRegistry(() => SettingsSchema.parse({}))
@@ -153,7 +155,7 @@ describe('Source registry', () => {
     const channel = trigger.channel!
     expect(channel.address).toEqual({ chatId: 'oc_dm', messageId: 'om_dm', direct: 'true' })
     expect(sources.channelAllowed(channel)).toBe(true)
-    const commands = new Commands(() => testDeployment(), {}, new AbortController().signal)
+    const commands = testCommands(() => testDeployment())
     const run = vi.spyOn(commands, 'run').mockResolvedValue('{"ok":true,"data":{}}')
     const reply: OutboundMessage = { id: 'reply-1', channel, text: 'Done', kind: 'reply' }
     expect(await sources.send(reply, commands)).toBe('sent')

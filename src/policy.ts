@@ -95,7 +95,12 @@ export const ExecutorConfigSchema = z.object({
   prepare: z.string().max(LIMITS.prepareCommand).default(''),
   blockedCommands: z.array(CommandNameSchema).default([]),
 }).strict()
-export const SourceInstanceSchema = z.object({ enabled: z.boolean().default(true), config: z.record(z.string(), z.unknown()).default({}) }).strict()
+export const SourceInstanceSchema = z.object({
+  /** Installed implementation; defaults to the instance ID for the conventional single instance of a kind. */
+  kind: z.string().regex(/^[a-z][a-z0-9-]*$/).optional(),
+  enabled: z.boolean().default(true),
+  config: z.record(z.string(), z.unknown()).default({}),
+}).strict()
 export const SettingsSchema = z.object({
   paused: z.boolean().default(false),
   sources: z.record(z.string().regex(/^[a-z][a-z0-9-]*$/), SourceInstanceSchema).default({}),
