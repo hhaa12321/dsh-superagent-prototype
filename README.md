@@ -29,6 +29,7 @@ Read the numbered documents in order; each builds only on the ones before it.
 - [006 Deployment](docs/006-deployment.md): manual setup, configuration, upgrades and troubleshooting
 - [007 Architecture](docs/007-architecture.md)
 - [008 Cookbook](docs/008-cookbook.md): adding a Source
+- [009 Multi-repository and multi-forge roadmap](docs/009-multi-repository-roadmap.md): repository identity, Gitee-first delivery, and the path from one GitHub repository to one control plane for many repositories
 
 ## Development
 
