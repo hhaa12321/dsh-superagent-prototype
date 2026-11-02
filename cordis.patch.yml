@@ -9,6 +9,9 @@
     # Optional Gitee Source; a configured instance watches its own repository.
     - id: dsh-superagent-gitee
       name: dsh-superagent/gitee-watch
+    # Optional GitLab Source; a configured instance watches its own repository through the same forge boundary.
+    - id: dsh-superagent-gitlab
+      name: dsh-superagent/gitlab-watch
     # Optional Feishu Source; requires configuring a bot CLI after enabling.
     - id: dsh-superagent-feishu
       name: dsh-superagent/feishu-watch

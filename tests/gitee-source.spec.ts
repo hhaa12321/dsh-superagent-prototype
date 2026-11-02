@@ -82,7 +82,7 @@ function harness(options: { accounts?: Record<string, string>; observePulls?: bo
     sourceId => bindings.find(item => item.sourceId === sourceId)?.binding)
   sources.register(giteeKind)
   const deployment = testDeployment({ github: undefined, credentials: {}, repositories: bindings.map(item => item.binding),
-    giteeCredentials: Object.fromEntries(bindings.map(item => [item.binding.credentialId, { tokenEnv: 'GITEE_TOKEN',
+    tokenCredentials: Object.fromEntries(bindings.map(item => [item.binding.credentialId, { tokenEnv: 'GITEE_TOKEN',
       login: accounts[item.sourceId]!, userId: item.sourceId === 'gitee-a' ? '618074' : '700001' }])) })
   const candidates: Candidate[] = []
   const starts: string[] = []
@@ -230,7 +230,7 @@ describe('Gitee read path', () => {
       const sources = new SourceRegistry(() => store.settings(), board, undefined, sourceId => sourceId === 'gitee-a' ? A : undefined)
       sources.register(giteeKind)
       const deployment = testDeployment({ github: undefined, credentials: {}, repositories: [A],
-        giteeCredentials: { [A.credentialId]: { tokenEnv: 'GITEE_TOKEN', login: 'bourneW', userId: '618074' } } })
+        tokenCredentials: { [A.credentialId]: { tokenEnv: 'GITEE_TOKEN', login: 'bourneW', userId: '618074' } } })
       const engine = new Engine({ repo: store, scope: sources, policy: () => settingsPolicy(store.settings(), sources),
         assessor: { request: vi.fn() }, executor: { start: vi.fn(), deliver: vi.fn(), stop: vi.fn() },
         outbox: { send: vi.fn(), status: () => undefined, withdraw: vi.fn() }, threadRepository: ref => ref.repositoryId ?? null,
@@ -287,10 +287,10 @@ describe('Gitee read path', () => {
     ], async () => { throw new Error('no GitHub probe') }, '/usr/bin:/bin', { GITEE_TOKEN: token })
     // A healthy binding survives an unreadable repository in the other Source instance.
     expect(deployment.repositories).toEqual([expect.objectContaining({ id: A.id, provider: 'gitee', slug: A.slug })])
-    expect(deployment.sourceProblems?.['gitee-b']).toMatchObject({ code: 'giteeRepositoryUnreadable', source: 'gitee-b', place: 'gitee',
+    expect(deployment.sourceProblems?.['gitee-b']).toMatchObject({ code: 'tokenRepositoryUnreadable', source: 'gitee-b', place: 'gitee',
       values: { repository: 'bourneW/missing', account: 'bourneW' } })
     expect(deployment.sourceProblems?.['gitee-a']).toBeUndefined()
-    expect(problemOf('gitee-b', { deployment })).toMatchObject({ code: 'giteeRepositoryUnreadable' })
+    expect(problemOf('gitee-b', { deployment })).toMatchObject({ code: 'tokenRepositoryUnreadable' })
     expect(problemOf('gitee-a', { deployment })).toBeUndefined()
   })
 
@@ -304,7 +304,7 @@ describe('Gitee read path', () => {
     expect(deployment.credentials).toEqual({})
     expect(deployment.repositories).toEqual([expect.objectContaining({ id: A.id, provider: 'gitee', providerRepositoryId: '51207621',
       slug: A.slug, credentialId: 'gitee:gitee', capabilities: expect.objectContaining({ ci: false }) })])
-    expect(deployment.giteeCredentials['gitee:gitee']).toEqual({ tokenEnv: 'GITEE_TOKEN', login: 'bourneW', userId: '618074',
+    expect(deployment.tokenCredentials['gitee:gitee']).toEqual({ tokenEnv: 'GITEE_TOKEN', login: 'bourneW', userId: '618074',
       commitEmail: 'bourneW@noreply.gitee.com' })
     expect(JSON.stringify(deployment)).not.toContain(token)
     expect(deployment.repositories[0]!.capabilities.pulls.create).toBe(true)

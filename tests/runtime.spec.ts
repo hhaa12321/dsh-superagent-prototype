@@ -28,7 +28,7 @@ import { feishuChannel } from '../src/sources/feishu-trigger.ts'
 import { commentTrigger, githubChannel } from '../src/sources/github-trigger.ts'
 import { IM_WORDS } from '../src/infra/text.ts'
 import { observePull, pullOf } from '../src/sources/github-pull.ts'
-import { credentialHelper, giteeCredentialHelper, workerGitConfig } from '../src/infra/environment.ts'
+import { credentialHelper, tokenCredentialHelper, workerGitConfig } from '../src/infra/environment.ts'
 import { policyHistory } from '../src/app/settings-history.ts'
 import { overview } from '../src/app/views/overview.ts'
 import { preview, readable } from '../src/app/views/text.ts'
@@ -159,7 +159,7 @@ beforeEach(async () => {
     [`${BOT()} config strict-mode`]: 'strict-mode: bot (source: profile)',
     [`${BOT()} api GET /open-apis/bot/v3/info --as bot --format ndjson`]: '{"bot":{"open_id":"ou_bot"},"code":0,"msg":"ok"}',
     [HELPERS]: `file:${workerGitConfig(directory)}\0${credentialHelper(directory)}\0`,
-    [GITEE_HELPERS]: `file:${workerGitConfig(directory)}\0${giteeCredentialHelper(directory)}\0`,
+    [GITEE_HELPERS]: `file:${workerGitConfig(directory)}\0${tokenCredentialHelper(directory)}\0`,
     [SCOPED]: `global\0credential.helper\n\0global\0credential.https://github.com.helper\n${credentialHelper(directory)}\0`,
   }
   const ctx = new Context()

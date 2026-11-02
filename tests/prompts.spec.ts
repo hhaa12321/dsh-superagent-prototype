@@ -116,11 +116,13 @@ it('registers the built-in Source skills, Feishu only with a Feishu bot, before 
   withStore(store => {
     const config = { ...defaultPrompts(), skills: { release: 'Tag releases.' } }
     const skills = promptsOf(store).skills(config)
-    expect(skills.map(([name]) => name)).toEqual(['feishu', 'github', 'gitee', 'release'])
+    expect(skills.map(([name]) => name)).toEqual(['feishu', 'github', 'gitee', 'gitlab', 'release'])
     expect(skills[1]![1]).toContain('## CLI usage')
     expect(skills[2]![1]).toContain('Gitee')
-    expect(skills[3]![1]).toBe('Tag releases.')
-    expect(new Prompts(store, () => 100000, variables, () => false).skills(config).map(([name]) => name)).toEqual(['github', 'gitee', 'release'])
+    expect(skills[3]![1]).toContain('GitLab')
+    expect(skills[4]![1]).toBe('Tag releases.')
+    expect(new Prompts(store, () => 100000, variables, () => false).skills(config).map(([name]) => name))
+      .toEqual(['github', 'gitee', 'gitlab', 'release'])
   })
 })
 

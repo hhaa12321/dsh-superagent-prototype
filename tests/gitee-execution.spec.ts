@@ -15,7 +15,8 @@ import { sendGitee } from '../src/sources/gitee-channel.ts'
 import { giteeForgeAdapter } from '../src/forge/gitee.ts'
 import { claimPull, type PullHost } from '../src/forge/pulls.ts'
 import type { ForgePull } from '../src/forge/ports.ts'
-import { GiteeCredentialBroker, giteeCredentialHelperFiles } from '../src/forge/gitee-credential.ts'
+import { TokenCredentialBroker, tokenCredentialHelperFiles } from '../src/forge/token-credential.ts'
+import { tokenCredentialHost } from '../src/forge/adapters.ts'
 import { environmentOf } from '../src/app/execution-environment.ts'
 import { writeEnvironment } from '../src/infra/environment.ts'
 import { executorTools, originIssueOf, type ExecutorToolsHost } from '../src/app/tools/executor.ts'
@@ -136,7 +137,7 @@ function harness(path?: string, bindings: RepositoryBinding[] = [A], evalMode: '
   })
   sources.register(giteeKind)
   const deployment = testDeployment({ stateDir: directory, github: undefined, credentials: {}, repositories: bindings,
-    giteeCredentials: { [A.credentialId]: { tokenEnv: 'GITEE_TOKEN', login: 'bourneW', userId: '618074', commitEmail: 'bourneW@noreply.gitee.com' },
+    tokenCredentials: { [A.credentialId]: { tokenEnv: 'GITEE_TOKEN', login: 'bourneW', userId: '618074', commitEmail: 'bourneW@noreply.gitee.com' },
       [B.credentialId]: { tokenEnv: 'GITEE_TOKEN', login: 'bourneW', userId: '618074', commitEmail: 'bourneW@noreply.gitee.com' } } })
   const candidates: Candidate[] = [], starts: string[] = [], stops: string[] = []
   let closed = false
@@ -174,7 +175,7 @@ describe('Gitee execution', () => {
   const toolHost = (harness: Harness, ticket: NonNullable<ReturnType<Harness['ticket']>>, sourceId = 'gitee-a'): ExecutorToolsHost => {
     const ctx = harness.ctx(sourceId)
     const binding = harness.bindings.find(item => item.id === ticket.repositoryId)!
-    const account = harness.deployment.giteeCredentials[binding.credentialId]!
+    const account = harness.deployment.tokenCredentials[binding.credentialId]!
     return { engine: harness.engine, store: harness.store, sessions: { relay: vi.fn(), notify: vi.fn() }, resources: {} as ResourceHost,
       forge: () => ({ binding, adapter: giteeForgeAdapter, sourceId, login: account.login,
         context: giteeForgeAdapter.readContext({ deployment: harness.deployment, binding, commands: ctx.commands, env: process.env }),
@@ -251,7 +252,7 @@ describe('Gitee execution', () => {
     // The token never travelled in a URL or body, and never entered the state directory.
     expect(gitee.calls.every(call => !call.url.href.includes(token) && !call.body.includes(token))).toBe(true)
     expect(JSON.stringify(h.store.keys('').map(item => h.store.get(item)))).not.toContain(token)
-    for (const file of ['worker-gitee-credential-helper', 'worker-gitee-credential-helper.cjs', 'worker-gitconfig']) {
+    for (const file of ['worker-token-credential-helper', 'worker-token-credential-helper.cjs', 'worker-gitconfig']) {
       expect(readFileSync(join(h.directory, file), 'utf8')).not.toContain(token)
     }
   })
@@ -353,12 +354,12 @@ describe('Gitee execution', () => {
 
   it('gives workers a binding-scoped Gitee credential helper and broker without a token in its files or environment', async () => {
     h = harness()
-    const broker = new GiteeCredentialBroker({ stateDir: h.directory, lookup: bindingId => bindingId === A.id
+    const broker = new TokenCredentialBroker({ stateDir: h.directory, host: tokenCredentialHost, lookup: bindingId => bindingId === A.id
       ? { binding: A, login: 'bourneW', token } : undefined })
     await broker.start()
     try {
-      for (const file of giteeCredentialHelperFiles(h.directory)) writeFileSync(file.path, file.body, { mode: file.mode })
-      const helper = join(h.directory, 'worker-gitee-credential-helper')
+      for (const file of tokenCredentialHelperFiles(h.directory)) writeFileSync(file.path, file.body, { mode: file.mode })
+      const helper = join(h.directory, 'worker-token-credential-helper')
       const ask = (env: Record<string, string>, path: string) => new Promise<{ code: number | null; stdout: string; stderr: string }>(resolve => {
         const child = spawn(helper, ['get'], { env: { PATH: process.env.PATH, HOME: h.directory, ...env } })
         let stdout = '', stderr = ''
@@ -373,10 +374,10 @@ describe('Gitee execution', () => {
       expect(granted.stdout).toContain('username=bourneW')
       expect(granted.stdout).toContain('password=')
       // A repository outside the mapped binding, and a binding without a credential, fail closed.
-      expect(await ask(environment, B.slug)).toMatchObject({ code: 1, stdout: '', stderr: expect.stringContaining('outside this ticket\'s Gitee repository') })
+      expect(await ask(environment, B.slug)).toMatchObject({ code: 1, stdout: '', stderr: expect.stringContaining('outside this ticket\'s repository') })
       expect(await ask({ ...environment, DSH_SUPERAGENT_REPOSITORY_ID: B.id }, B.slug)).toMatchObject({ code: 1, stdout: '' })
       // No token is in the helper's files or the environment they receive.
-      for (const file of ['worker-gitee-credential-helper', 'worker-gitee-credential-helper.cjs']) {
+      for (const file of ['worker-token-credential-helper', 'worker-token-credential-helper.cjs']) {
         expect(readFileSync(join(h.directory, file), 'utf8')).not.toContain(token)
       }
       expect(JSON.stringify(environment)).not.toContain(token)

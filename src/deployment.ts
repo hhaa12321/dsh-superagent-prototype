@@ -11,12 +11,12 @@ import { SetupError, type SetupProblem } from './setup.ts'
 import { forgeCredentialId } from './repository.ts'
 import type { RepositoryBinding } from './repository.ts'
 import { GiteeAccountsSchema, GithubAccountsSchema } from './forge/config.ts'
-import { ForgeRegistry } from './forge/registry.ts'
-import { githubForgeAdapter } from './forge/github.ts'
-import { giteeForgeAdapter } from './forge/gitee.ts'
+import { FORGE_ADAPTERS } from './forge/adapters.ts'
+import type { ForgeRegistry } from './forge/registry.ts'
 import type { ForgeSetupEnvironment } from './forge/ports.ts'
 
 export { GiteeAccountsSchema, GithubAccountsSchema } from './forge/config.ts'
+export { FORGE_ADAPTERS } from './forge/adapters.ts'
 
 const reason = (error: unknown): string => error instanceof Error ? error.message : String(error)
 const absolute = (description: string) => s.string().pattern(/^\//).description(`${description} Absolute path.`)
@@ -54,21 +54,19 @@ export function machineOf(config: DeploymentConfig): Machine {
 export const FeishuBotSchema = z.object({ cli: z.string().trim().default('') })
 /** Source configuration keys that affect deployment setup and trigger a restart when changed. */
 export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: ['repository', 'cli'], gitee: ['repository', 'tokenEnv'],
-  feishu: Object.keys(FeishuBotSchema.shape) }
+  gitlab: ['repository', 'tokenEnv'], feishu: Object.keys(FeishuBotSchema.shape) }
 
 /** One resolved GitHub CLI identity; `credentialId` of a binding names one of these entries. */
 export interface GithubCredential { cli: string; login: string; noreply: string }
-/** One resolved Gitee identity and the environment variable that holds its token; the token itself is never stored here. */
-export interface GiteeCredential { tokenEnv: string; login: string; userId: string; commitEmail?: string }
-/** Built-in forge adapters; setup resolves every repository-bound Source through its provider's adapter. */
-export const FORGE_ADAPTERS = new ForgeRegistry([githubForgeAdapter, giteeForgeAdapter])
+/** One resolved token-authenticated identity and the environment variable that holds its token; the token itself is never stored here. */
+export interface TokenCredential { tokenEnv: string; login: string; userId: string; commitEmail?: string }
 export interface Deployment extends Machine {
-  /** The first GitHub account, used by repository-less paths such as the shared worker shim; absent in a Gitee-only deployment. */
+  /** The first GitHub account, used by repository-less paths such as the shared worker shim; absent in a deployment with no GitHub Source. */
   github?: GithubCredential
   /** GitHub CLI credentials by binding `credentialId`; a ticket's tool calls resolve their own binding's entry. */
   credentials: Record<string, GithubCredential>
-  /** Gitee identities by binding `credentialId`; each names the variable its token is read from at use. */
-  giteeCredentials: Record<string, GiteeCredential>
+  /** Token-authenticated forge identities by binding `credentialId`, shared by Gitee and GitLab; each names the variable its token is read from at use. */
+  tokenCredentials: Record<string, TokenCredential>
   /** Persisted repository bindings resolved and verified at startup. */
   repositories: RepositoryBinding[]
   /** Setup failures scoped to one Source instance; other Sources keep running, and the panel shows each on its own card. */
@@ -109,7 +107,7 @@ export interface ForgeSourceInput { sourceId: string; kind?: string; enabled: bo
  * Resolve every configured repository-bound Source through its provider's forge adapter. Each enabled instance resolves
  * exactly one RepositoryBinding whose stable ID is the provider's immutable repository ID; a slug is only a display name
  * and the input used to find the repository. Re-resolving keeps the binding ID across slug changes. A deployment may have
- * Gitee bindings alone: no GitHub Source is invented or required.
+ * token-authenticated bindings alone: no GitHub Source is invented or required.
  */
 export async function resolveDeployment(machine: Machine, sources: readonly ForgeSourceInput[], probe: Probe, path = process.env.PATH ?? '',
   env: Record<string, string | undefined> = process.env, adapters: ForgeRegistry = FORGE_ADAPTERS): Promise<Deployment> {
@@ -121,7 +119,7 @@ export async function resolveDeployment(machine: Machine, sources: readonly Forg
     signal: AbortSignal.timeout(60_000),
   }
   const credentials: Record<string, GithubCredential> = {}
-  const giteeCredentials: Record<string, GiteeCredential> = {}
+  const tokenCredentials: Record<string, TokenCredential> = {}
   const repositories: RepositoryBinding[] = []
   const sourceProblems: Record<string, SetupProblem> = {}
   const owners = new Map<string, string[]>()
@@ -142,7 +140,9 @@ export async function resolveDeployment(machine: Machine, sources: readonly Forg
     }
     if (!resolution) {
       if (source.enabled) {
-        const problem = new SetupError(provider === 'gitee' ? 'giteeRepositoryUnset' : 'repositoryUnset')
+        const problem = adapter.credentialKind === 'token'
+          ? new SetupError('tokenRepositoryUnset', { provider: adapter.provider }, adapter.provider as 'gitee' | 'gitlab')
+          : new SetupError('repositoryUnset')
         sourceProblems[source.sourceId] = { ...problem.problem, source: source.sourceId }
       }
       continue
@@ -152,11 +152,11 @@ export async function resolveDeployment(machine: Machine, sources: readonly Forg
     if (owner.length) throw new SetupError('repositoryDuplicate', { repository: resolution.repository.slug, sources: [...owner, source.sourceId].join(', ') })
     owners.set(id, [source.sourceId])
     const credentialId = forgeCredentialId(provider, source.sourceId)
-    if (provider === 'github') {
+    if (adapter.credentialKind === 'cli') {
       credentials[credentialId] = { cli: resolution.credential.reference, login: resolution.identity.login,
         noreply: resolution.credential.commitEmail ?? `${resolution.identity.providerUserId}+${resolution.identity.login}@users.noreply.github.com` }
-    } else if (provider === 'gitee') {
-      giteeCredentials[credentialId] = { tokenEnv: resolution.credential.reference, login: resolution.identity.login,
+    } else {
+      tokenCredentials[credentialId] = { tokenEnv: resolution.credential.reference, login: resolution.identity.login,
         userId: resolution.identity.providerUserId, ...resolution.credential.commitEmail ? { commitEmail: resolution.credential.commitEmail } : {} }
     }
     repositories.push({ id, provider, providerRepositoryId: resolution.repository.providerRepositoryId, slug: resolution.repository.slug,
@@ -167,10 +167,10 @@ export async function resolveDeployment(machine: Machine, sources: readonly Forg
   const failed = Object.keys(sourceProblems)
   if (!repositories.length && failed.length) {
     const first = sourceProblems[failed[0]!]!
-    throw new SetupError(first.code, first.values)
+    throw new SetupError(first.code, first.values, first.place)
   }
   const github = [...new Set(Object.values(credentials))][0]
-  return { ...machine, ...github ? { github } : {}, credentials, giteeCredentials, repositories,
+  return { ...machine, ...github ? { github } : {}, credentials, tokenCredentials, repositories,
     ...failed.length ? { sourceProblems } : {} }
 }
 

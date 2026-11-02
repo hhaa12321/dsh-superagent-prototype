@@ -1,10 +1,10 @@
 /** Structured startup and configuration errors with the settings location where the operator can fix them. */
 import { fill } from './infra/text.ts'
 
-export type SetupPlace = 'deployment' | 'github' | 'gitee' | 'feishu'
+export type SetupPlace = 'deployment' | 'github' | 'gitee' | 'gitlab' | 'feishu' | 'token'
 export const SETUP_PROBLEMS = {
   foreignFile: ['deployment', '{file} was not written by dsh-superagent; move it, or choose another state directory.'],
-  gitTooOld: ['deployment', 'git does not read the github.com credential configuration dsh-superagent writes; dsh-superagent needs git 2.32 or later.'],
+  gitTooOld: ['deployment', 'git does not read the credential configuration dsh-superagent writes; dsh-superagent needs git 2.32 or later.'],
   environmentFailed: ['deployment', 'Preparing the agent environment failed.'],
   repositoryUnset: ['github', 'The GitHub Source names no repository.'],
   agentCliUnset: ['github', 'The agent GitHub CLI is not set.'],
@@ -14,12 +14,12 @@ export const SETUP_PROBLEMS = {
   repositoryUnreadable: ['github', '@{account} cannot read {repository}.'],
   repositoryUnreported: ['github', 'The agent GitHub CLI did not return {repository}.'],
   repositoryReadOnly: ['github', '@{account} cannot push to {repository}.'],
-  giteeRepositoryUnset: ['gitee', 'The Gitee Source names no repository.'],
-  giteeTokenUnset: ['gitee', 'The Gitee credential reference names {variable}, which is not set in the dsh-superagent process.'],
-  giteeTokenRejected: ['gitee', 'Gitee did not accept the configured token.'],
-  giteeRepositoryUnreadable: ['gitee', '@{account} cannot read {repository}.'],
-  giteeRepositoryUnreported: ['gitee', 'Gitee did not return {repository}.'],
-  giteeRepositoryReadOnly: ['gitee', '@{account} cannot push to {repository}.'],
+  tokenRepositoryUnset: ['token', 'The {provider} Source names no repository.'],
+  tokenCredentialUnset: ['token', 'The {provider} credential reference names {variable}, which is not set in the dsh-superagent process.'],
+  tokenCredentialRejected: ['token', '{provider} did not accept the configured token.'],
+  tokenRepositoryUnreadable: ['token', '@{account} cannot read {repository} on {provider}.'],
+  tokenRepositoryUnreported: ['token', '{provider} did not return {repository}.'],
+  tokenRepositoryReadOnly: ['token', '@{account} cannot push to {repository} on {provider}.'],
   repositoryDuplicate: ['deployment', 'Two repository-bound Source instances resolve the same repository {repository}: {sources}. One binding can own one repository.'],
   sourceBindingFixed: ['deployment', 'The {source} Source is already bound to {from}, but setup resolved {to}. A Source instance cannot be rebound to another repository; add a new Source instance.'],
   feishuCliFailed: ['feishu', 'The bot lark-cli does not work.'],
@@ -38,11 +38,12 @@ export interface SetupProblem { place: SetupPlace; code: SetupCode; values: Reco
  */
 export class SetupError extends Error {
   readonly place: SetupPlace
-  constructor(readonly code: SetupCode, readonly values: Record<string, string> = {}) {
+  /** `provider` scopes a provider-neutral problem code (such as a token credential failure) to the Source that owns it. */
+  constructor(readonly code: SetupCode, readonly values: Record<string, string> = {}, provider?: SetupPlace) {
     const [place, text] = SETUP_PROBLEMS[code]
     const sentence = fill(text, values)
     super(values.output ? `${sentence}\n${values.output}` : sentence)
-    this.place = place
+    this.place = provider ?? place
   }
   get problem(): SetupProblem { return { place: this.place, code: this.code, values: this.values, detail: this.message } }
 }

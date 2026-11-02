@@ -95,6 +95,11 @@ export interface ForgeResolution {
   credential: { reference: string; commitEmail?: string }
 }
 
+/** One provider HTTP failure, normalized to its status and a sanitized provider message without the request URL or token. */
+export class ForgeHttpError extends Error {
+  constructor(message: string, readonly status: number, readonly provider: string) { super(message) }
+}
+
 /** Per-call read context: the binding's resolved secret (never logged or persisted) and provider-specific transports. */
 export interface ForgeReadContext {
   signal?: AbortSignal | undefined
@@ -123,6 +128,8 @@ export interface ForgeAdapter {
   readonly presentation: ForgePresentation
   /** The provider's Git host, used to select and constrain the binding's Git credential helper. */
   readonly gitHost: string
+  /** How a worker authenticates Git for this provider: through a protected token broker, or a CLI's own credential store. */
+  readonly credentialKind: 'token' | 'cli'
   /**
    * Builds the per-call context for this binding: a token resolved from the credential reference, or the binding's
    * commands. `env` is the host process environment, which holds a token only while it is in use.
@@ -140,7 +147,9 @@ export interface ForgeAdapter {
   readPull(binding: RepositoryBinding, displayNumber: string, context: ForgeReadContext): Promise<ForgePull>
   createPull(binding: RepositoryBinding, input: ForgePullInput, context: ForgeReadContext): Promise<ForgePull>
   /** Reads a pull request's own comments; providers without a separate PR comment endpoint may repeat its Issue comments. */
-  listPullComments(binding: RepositoryBinding, pull: ForgePull, query: ForgeReadQuery, context: ForgeReadContext): Promise<ForgePage<ForgeComment>>
+  listPullComments(binding: RepositoryBinding, pull: Pick<ForgePull, 'displayNumber'>, query: ForgeReadQuery, context: ForgeReadContext): Promise<ForgePage<ForgeComment>>
+  /** Writes one comment on a pull request; idempotency belongs to the caller's marker, not this port. */
+  createPullComment(binding: RepositoryBinding, pull: Pick<ForgePull, 'displayNumber'>, body: string, context: ForgeReadContext): Promise<ForgeComment>
   /**
    * The provider-specific Thread ID part a pull request is followed by. It includes the provider's immutable PR ID for a
    * provider whose Issue and PR streams can share display numbers, and the display number where that is stable.

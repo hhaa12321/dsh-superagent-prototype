@@ -11,7 +11,8 @@ import type { SubprocessOutputReader, SubprocessRuntime } from '@deepseek-ai/dsh
 import type { Deployment } from '../deployment.ts'
 import { SetupError } from '../setup.ts'
 import { CliError } from './commands.ts'
-import { giteeCredentialHelperFiles, giteeCredentialHelperPath } from '../forge/gitee-credential.ts'
+import { tokenCredentialHelperFiles, tokenCredentialHelperPath } from '../forge/token-credential.ts'
+import { tokenCredentialHost } from '../forge/adapters.ts'
 
 const MARKER = '# Written by dsh-superagent on every start; edits are lost.'
 /** Markers of files written under the project's earlier names (`dsh-tag`, `dsh-go`, `dsh-freelancer`), which `dsh-superagent` owns and replaces too. */
@@ -25,8 +26,13 @@ const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")
 const gitQuote = (value: string): string => `"${value.replace(/[\\"]/g, char => `\\${char}`)}"`
 /** Git's credential helper command: a wrapper that admits only the ticket's repository; see `writeEnvironment`. */
 export const credentialHelper = (stateDir: string): string => `!${shellQuote(workerCredentialHelper(stateDir))}`
-/** The Gitee credential helper command, whose helper asks the host broker for one binding's credential. */
-export const giteeCredentialHelper = (stateDir: string): string => `!${shellQuote(giteeCredentialHelperPath(stateDir))}`
+/** The token credential helper command, whose helper asks the host broker for one binding's credential. */
+export const tokenCredentialHelper = (stateDir: string): string => `!${shellQuote(tokenCredentialHelperPath(stateDir))}`
+/** The unique Git hosts of the deployment's token-authenticated bindings, in binding order. */
+function tokenCredentialHosts(deployment: Pick<Deployment, 'repositories'>): string[] {
+  return [...new Set(deployment.repositories.map(binding => tokenCredentialHost(binding.provider))
+    .filter((host): host is string => host !== undefined))]
+}
 
 export function sameDirectory(a: string, b: string): boolean {
   const real = (path: string): string => { try { return realpathSync(path) } catch { return resolve(path) } }
@@ -51,8 +57,9 @@ export const GIT_LOCATION: readonly string[] = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT
 export function agentVariables(stateDir: string): Record<string, string | undefined> {
   return {
     GH_TOKEN: undefined, GITHUB_TOKEN: undefined,
-    // Gitee's token stays in the dsh-superagent process: setup must not remove it from the host environment, and DSH's
-    // SENSITIVE_ENV_PATTERN already strips credential-shaped names such as GITEE_TOKEN from every worker subprocess.
+    // A token-authenticated forge's token stays in the dsh-superagent process: setup must not remove it from the host
+    // environment, and DSH's SENSITIVE_ENV_PATTERN already strips credential-shaped names such as GITEE_TOKEN or
+    // GITLAB_TOKEN from every worker subprocess.
     // A worker's git finds the repository from its directory, never from the host's environment.
     ...Object.fromEntries(GIT_LOCATION.map(name => [name, undefined])),
     GIT_CONFIG_GLOBAL: workerGitConfig(stateDir), GIT_CONFIG_NOSYSTEM: '1',
@@ -193,9 +200,11 @@ ${bindingGuard(deployment)}`)
     ...cliCase('$repo', deployment),
     "  printf '%s\\n' \"$input\" | \"$real\" auth git-credential \"$@\"",
   ].join('\n') + '\n', 0o755)
-  // The Gitee helper contains no secret: it names the binding the shell environment carries and asks the host broker over
-  // its private socket. Git is told to use it only for gitee.com, so a worker cannot address another provider's host.
-  for (const file of giteeCredentialHelperFiles(stateDir)) await own(file.path, file.body, file.mode)
+  // The token helper contains no secret: it names the binding the shell environment carries and asks the host broker over
+  // its private socket. Git is told to use it only for the hosts of this deployment's token-authenticated bindings, so a
+  // worker cannot address another provider's host.
+  for (const file of tokenCredentialHelperFiles(stateDir)) await own(file.path, file.body, file.mode)
+  const tokenHosts = tokenCredentialHosts(deployment)
   await own(workerGitConfig(stateDir), [
     MARKER,
     // Make git refuse to commit without an explicit identity set by the worker instead of guessing from the operator's OS user.
@@ -203,9 +212,9 @@ ${bindingGuard(deployment)}`)
     // A credential is resolved for a concrete repository path, never the host alone, so the helper can enforce the binding.
     '[credential]', '\thelper =', '\tuseHttpPath = true',
     '[credential "https://github.com"]', `\thelper = ${gitQuote(credentialHelper(stateDir))}`,
-    '[credential "https://gitee.com"]', `\thelper = ${gitQuote(giteeCredentialHelper(stateDir))}`,
     '[url "https://github.com/"]', '\tinsteadOf = git@github.com:', '\tinsteadOf = ssh://git@github.com:',
-    '[url "https://gitee.com/"]', '\tinsteadOf = git@gitee.com:', '\tinsteadOf = ssh://git@gitee.com:',
+    ...tokenHosts.flatMap(host => [[`[credential "https://${host}"]`, `\thelper = ${gitQuote(tokenCredentialHelper(stateDir))}`],
+      [`[url "https://${host}/"]`, `\tinsteadOf = git@${host}:`, `\tinsteadOf = ssh://git@${host}:`]]).flat(),
     // Include Git LFS filters because the operator's global gitconfig (which usually holds them) is ignored.
     '[filter "lfs"]', '\tclean = git-lfs clean -- %f', '\tsmudge = git-lfs smudge -- %f', '\tprocess = git-lfs filter-process', '\trequired = true',
   ].join('\n') + '\n')
@@ -230,15 +239,18 @@ export async function runAsWorker(subprocess: SubprocessRuntime, argv: string[],
   throw new CliError(read(handle.collected.stderr).trim() || `${argv.join(' ')} ${ended}`, undefined, exitCode ?? undefined)
 }
 
-/** Verifies that worker git invocations resolve the deployment's GitHub and Gitee credential helpers. */
-export async function verifyEnvironment(deployment: Pick<Deployment, 'stateDir'>, subprocess: SubprocessRuntime, signal: AbortSignal): Promise<void> {
+/** Verifies that worker git invocations resolve the deployment's GitHub CLI helper and every token credential helper. */
+export async function verifyEnvironment(deployment: Pick<Deployment, 'stateDir' | 'repositories'>, subprocess: SubprocessRuntime,
+  signal: AbortSignal): Promise<void> {
   const { stateDir } = deployment
   // `-z` separates fields with NUL and never quotes paths.
   const helpers = async (host: string): Promise<string> => await runAsWorker(subprocess,
     ['git', 'config', '-z', '--show-origin', '--get-all', `credential.https://${host}.helper`], stateDir,
     AbortSignal.any([signal, AbortSignal.timeout(60_000)])).catch(() => '')
   if (await helpers('github.com') !== [`file:${workerGitConfig(stateDir)}`, credentialHelper(stateDir), ''].join('\0')) throw new SetupError('gitTooOld')
-  if (await helpers('gitee.com') !== [`file:${workerGitConfig(stateDir)}`, giteeCredentialHelper(stateDir), ''].join('\0')) throw new SetupError('gitTooOld')
+  for (const host of tokenCredentialHosts(deployment)) {
+    if (await helpers(host) !== [`file:${workerGitConfig(stateDir)}`, tokenCredentialHelper(stateDir), ''].join('\0')) throw new SetupError('gitTooOld')
+  }
 }
 
 /**

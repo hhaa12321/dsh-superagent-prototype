@@ -18,7 +18,7 @@ import { Store } from '../src/app/store.ts'
 import { Commands } from '../src/infra/commands.ts'
 import { inputMessage } from '../src/executor/dsh.ts'
 import { declaredVariables } from '../src/app/execution-environment.ts'
-import { credentialHelper, giteeCredentialHelper, workerGitConfig } from '../src/infra/environment.ts'
+import { credentialHelper, tokenCredentialHelper, workerGitConfig } from '../src/infra/environment.ts'
 import { IM_WORDS, NOTE_WORDS, checkedImText } from '../src/infra/text.ts'
 import { SettingsSchema } from '../src/policy.ts'
 import { feishuKind, feishuTrigger } from '../src/sources/feishu.ts'
@@ -86,7 +86,7 @@ async function start() {
     [`${BOT} config strict-mode`]: 'strict-mode: bot (source: profile)',
     [`${BOT} api GET /open-apis/bot/v3/info --as bot --format ndjson`]: '{"bot":{"open_id":"ou_bot"},"code":0,"msg":"ok"}',
     ['git config -z --show-origin --get-all credential.https://github.com.helper']: `file:${workerGitConfig(directory)}\0${credentialHelper(directory)}\0`,
-    ['git config -z --show-origin --get-all credential.https://gitee.com.helper']: `file:${workerGitConfig(directory)}\0${giteeCredentialHelper(directory)}\0`,
+    ['git config -z --show-origin --get-all credential.https://gitee.com.helper']: `file:${workerGitConfig(directory)}\0${tokenCredentialHelper(directory)}\0`,
     ['git config -z --show-scope --get-regexp ^(credential\\..*|http\\..*extraheader)$']:
       `global\0credential.helper\n\0global\0credential.https://github.com.helper\n${credentialHelper(directory)}\0`,
   }

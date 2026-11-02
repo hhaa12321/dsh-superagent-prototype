@@ -7,7 +7,8 @@ import type { Settings, SettingsBlock } from '../policy.ts'
 import type { Store } from './store.ts'
 import { SetupError, type SetupProblem } from '../setup.ts'
 import { forgeCredentialId } from '../repository.ts'
-import { GiteeCredentialBroker } from '../forge/gitee-credential.ts'
+import { TokenCredentialBroker } from '../forge/token-credential.ts'
+import { tokenCredentialHost } from '../forge/adapters.ts'
 
 export interface SetupHost {
   readonly context: Context
@@ -45,8 +46,8 @@ export class Setup {
   /** Environment variables pointing agent subprocesses at the isolated git config and command shims. */
   private readonly variables: Record<string, string | undefined>
   private restoreEnvironment?: () => void
-  /** Serves binding-scoped Gitee Git credentials to helpers while this setup is live. */
-  private broker?: GiteeCredentialBroker
+  /** Serves binding-scoped token credentials to Git helpers while this setup is live. */
+  private broker?: TokenCredentialBroker
   constructor(private readonly host: SetupHost) {
     this.path = withoutDirectory(process.env.PATH ?? '', workerBin(host.machine.stateDir))
     this.variables = agentVariables(host.machine.stateDir)
@@ -120,14 +121,14 @@ export class Setup {
     await this.broker?.stop()
     this.broker = undefined
     const deployment = await resolveDeployment(machine, forgeSources(settings), probe)
-    // The broker answers only for an enabled Gitee binding of this deployment, reading the token from this process's
-    // environment on each request; it never stores or returns the token anywhere else. A deployment with no Gitee binding
-    // needs no socket.
-    if (deployment.repositories.some(item => item.provider === 'gitee')) {
-      const broker = this.broker = new GiteeCredentialBroker({ stateDir: machine.stateDir, lookup: bindingId => {
+    // The broker answers only for an enabled token-authenticated binding of this deployment, reading the token from this
+    // process's environment on each request; it never stores or returns the token anywhere else. A deployment with no such
+    // binding needs no socket.
+    if (deployment.repositories.some(item => tokenCredentialHost(item.provider) !== undefined)) {
+      const broker = this.broker = new TokenCredentialBroker({ stateDir: machine.stateDir, host: tokenCredentialHost, lookup: bindingId => {
         const binding = deployment.repositories.find(item => item.id === bindingId && item.enabled)
-        if (!binding || binding.provider !== 'gitee') return undefined
-        const credential = deployment.giteeCredentials[binding.credentialId]
+        if (!binding || tokenCredentialHost(binding.provider) === undefined) return undefined
+        const credential = deployment.tokenCredentials[binding.credentialId]
         const token = credential ? process.env[credential.tokenEnv] : undefined
         return credential && token ? { binding, login: credential.login, token } : undefined
       } })

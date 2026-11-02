@@ -9,6 +9,7 @@ import type { RepositoryBinding } from '../repository.ts'
 import { GiteeAccountsSchema } from './config.ts'
 import { SetupError } from '../setup.ts'
 import type { ForgeCapabilities } from './capabilities.ts'
+import { ForgeHttpError } from './ports.ts'
 import type { ForgeAdapter, ForgeActor, ForgeComment, ForgeIssue, ForgePage, ForgePull, ForgePullInput, ForgeReadContext, ForgeReadQuery,
   ForgeResolveInput, ForgeResolution, ForgeSetupEnvironment } from './ports.ts'
 
@@ -54,10 +55,6 @@ const GiteePullSchema = z.looseObject({
   head: GiteePullRefSchema, base: GiteePullRefSchema,
 })
 
-/** A provider HTTP failure, normalized to its status and a sanitized provider message without the request URL or token. */
-export class ForgeHttpError extends Error {
-  constructor(message: string, readonly status: number, readonly provider: string) { super(message) }
-}
 const actor = (user: z.infer<typeof GiteeUserSchema>): ForgeActor => ({ providerUserId: String(user.id ?? user.login), login: user.login })
 const normalized = (value: string): string => new Date(Date.parse(value)).toISOString()
 const pageUrl = (url: string): string => url.replace(/\.git$/, '')
@@ -171,7 +168,7 @@ const mapPull = (pull: z.infer<typeof GiteePullSchema>): ForgePull => ({
 /** Resolves the token a binding's credential reference names, without ever returning the variable value elsewhere. */
 function tokenOf(environment: ForgeSetupEnvironment, variable: string): string {
   const token = environment.env[variable]
-  if (!token) throw new SetupError('giteeTokenUnset', { variable })
+  if (!token) throw new SetupError('tokenCredentialUnset', { provider: 'Gitee', variable }, 'gitee')
   return token
 }
 
@@ -180,6 +177,7 @@ export const giteeForgeAdapter: ForgeAdapter = {
   provider: 'gitee',
   capabilities: GITEE_CAPABILITIES,
   gitHost: 'gitee.com',
+  credentialKind: 'token',
   presentation: {
     issueUrl: (repository, number) => `${repository.webUrl}/issues/${encodeURIComponent(number)}`,
     pullUrl: (repository, number) => `${repository.webUrl}/pulls/${encodeURIComponent(number)}`,
@@ -188,7 +186,7 @@ export const giteeForgeAdapter: ForgeAdapter = {
   /** Gitee Issue and PR numbers are separate streams, but a PR's immutable ID keeps its Thread independent of both. */
   pullThreadId: pull => `pull:${pull.nativeId}`,
   readContext({ binding, deployment, env }) {
-    const credential = deployment.giteeCredentials[binding.credentialId]
+    const credential = deployment.tokenCredentials[binding.credentialId]
     if (!credential) throw new Error(`Repository ${binding.id} has no resolved Gitee credential ${binding.credentialId}`)
     const token = env[credential.tokenEnv]
     if (!token) throw new Error(`The Gitee credential ${credential.tokenEnv} is not set in the dsh-superagent process`)
@@ -200,16 +198,17 @@ export const giteeForgeAdapter: ForgeAdapter = {
     const token = tokenOf(environment, config.tokenEnv)
     const user = await request('/user', GiteeUserSchema, { signal: environment.signal, fetch: environment.fetch }, token).then(result => result.value)
       .catch((error: unknown) => {
-        if (error instanceof ForgeHttpError && (error.status === 401 || error.status === 403)) throw new SetupError('giteeTokenRejected', { output: error.message })
+        if (error instanceof ForgeHttpError && (error.status === 401 || error.status === 403)) throw new SetupError('tokenCredentialRejected', { provider: 'Gitee', output: error.message }, 'gitee')
         throw error
       })
     const repository = await request(`/repos/${config.repository}`, GiteeRepositorySchema, { signal: environment.signal, fetch: environment.fetch }, token)
       .then(result => result.value).catch((error: unknown) => {
-        throw new SetupError(error instanceof ForgeHttpError && error.status === 404 ? 'giteeRepositoryUnreadable' : 'giteeRepositoryUnreported',
-          { account: user.login, repository: config.repository, output: error instanceof Error ? error.message : String(error) })
+        throw new SetupError(error instanceof ForgeHttpError && error.status === 404 ? 'tokenRepositoryUnreadable' : 'tokenRepositoryUnreported',
+          { provider: 'Gitee', account: user.login, repository: config.repository, output: error instanceof Error ? error.message : String(error) },
+          'gitee')
       })
     const push = repository.permission?.push === true
-    if (!push) throw new SetupError('giteeRepositoryReadOnly', { account: user.login, repository: repository.full_name })
+    if (!push) throw new SetupError('tokenRepositoryReadOnly', { provider: 'Gitee', account: user.login, repository: repository.full_name }, 'gitee')
     return {
       repository: { providerRepositoryId: String(repository.id), slug: repository.full_name, webUrl: pageUrl(repository.html_url),
         defaultBranch: repository.default_branch ?? '' },
@@ -261,7 +260,12 @@ export const giteeForgeAdapter: ForgeAdapter = {
     return mapPull(await submit(`/repos/${binding.slug}/pulls`, GiteePullSchema,
       { title: input.title, body: input.body, head: input.head, base: input.base }, context))
   },
-  async listPullComments(binding: RepositoryBinding, pull: ForgePull, query: ForgeReadQuery, context: ForgeReadContext):
+  async createPullComment(binding: RepositoryBinding, pull: Pick<ForgePull, 'displayNumber'>, body: string, context: ForgeReadContext):
+    Promise<ForgeComment> {
+    return mapComment(await submit(`/repos/${binding.slug}/pulls/${encodeURIComponent(pull.displayNumber)}/comments`, GiteeCommentSchema,
+      { body }, context))
+  },
+  async listPullComments(binding: RepositoryBinding, pull: Pick<ForgePull, 'displayNumber'>, query: ForgeReadQuery, context: ForgeReadContext):
     Promise<ForgePage<ForgeComment>> {
     // Gitee's pull-request comment endpoint returns both its conversation (`pr_comment`) and diff (`diff_comment`) entries
     // when `comment_type` is omitted; the Issue comment endpoint takes Issue numbers and is not used for a PR.
@@ -272,3 +276,4 @@ export const giteeForgeAdapter: ForgeAdapter = {
     return { items, ...next ? { next } : {} }
   },
 }
+export { ForgeHttpError }

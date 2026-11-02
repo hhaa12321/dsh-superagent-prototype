@@ -59,6 +59,14 @@ export const KV = {
     issue: family<{ since: string }, [source: string, repository: string, thread: string]>('gitee-issue:'),
     pull: family<{ since: string }, [source: string, repository: string, thread: string]>('gitee-pull:') },
   /**
+   * GitLab Source, keyed by Source instance and repository binding: the Issue, comment and merge-request stream cursors,
+   * the per-Issue comment cursor, and the per-followed-merge-request comment cursor. Native IDs are strings because GitLab
+   * distinguishes a global Issue/MR ID from its project-scoped IID.
+   */
+  gitlab: { stream: family<{ since: string }, [source: string, repository: string, stream: string]>('gitlab-stream:'),
+    issue: family<{ since: string }, [source: string, repository: string, thread: string]>('gitlab-issue:'),
+    pull: family<{ since: string }, [source: string, repository: string, thread: string]>('gitlab-pull:') },
+  /**
    * Feishu Source: known chats (`true` for direct messages); per-chat history cursor and active topics mapped from topic ID
    * to last-seen timestamp; and per-polled-thread seen message IDs and initialization flag.
    */
