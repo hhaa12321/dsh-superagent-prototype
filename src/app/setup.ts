@@ -7,6 +7,7 @@ import type { Settings, SettingsBlock } from '../policy.ts'
 import type { Store } from './store.ts'
 import { SetupError, type SetupProblem } from '../setup.ts'
 import { forgeCredentialId } from '../repository.ts'
+import { GiteeCredentialBroker } from '../forge/gitee-credential.ts'
 
 export interface SetupHost {
   readonly context: Context
@@ -44,6 +45,8 @@ export class Setup {
   /** Environment variables pointing agent subprocesses at the isolated git config and command shims. */
   private readonly variables: Record<string, string | undefined>
   private restoreEnvironment?: () => void
+  /** Serves binding-scoped Gitee Git credentials to helpers while this setup is live. */
+  private broker?: GiteeCredentialBroker
   constructor(private readonly host: SetupHost) {
     this.path = withoutDirectory(process.env.PATH ?? '', workerBin(host.machine.stateDir))
     this.variables = agentVariables(host.machine.stateDir)
@@ -59,6 +62,8 @@ export class Setup {
   async run(settings: Settings): Promise<boolean> {
     try { this.resolved = await this.resolve(settings); return true }
     catch (error) {
+      // A failed setup leaves no broker serving credentials for a deployment it could not verify.
+      await this.restore()
       if (!(error instanceof SetupError)) throw error
       this.problem = error.problem
       return false
@@ -98,7 +103,12 @@ export class Setup {
   async blockCommands(blocked: readonly string[]): Promise<void> {
     if (this.resolved) await writeEnvironment(this.resolved, blocked)
   }
-  restore(): void { this.restoreEnvironment?.(); this.restoreEnvironment = undefined }
+  restore(): Promise<void> {
+    this.restoreEnvironment?.(); this.restoreEnvironment = undefined
+    const broker = this.broker
+    this.broker = undefined
+    return broker ? broker.stop() : Promise.resolve()
+  }
   /** Probes CLIs the way worker shells run them, using `stateDir` as `cwd` since it exists even before the repository clone is valid. */
   private probe() {
     const { context, machine, lifetime } = this.host
@@ -107,7 +117,24 @@ export class Setup {
   private async resolve(settings: Settings): Promise<Deployment> {
     const { context, machine, lifetime } = this.host
     const probe = this.probe()
+    await this.broker?.stop()
+    this.broker = undefined
     const deployment = await resolveDeployment(machine, forgeSources(settings), probe)
+    // The broker answers only for an enabled Gitee binding of this deployment, reading the token from this process's
+    // environment on each request; it never stores or returns the token anywhere else. A deployment with no Gitee binding
+    // needs no socket.
+    if (deployment.repositories.some(item => item.provider === 'gitee')) {
+      const broker = this.broker = new GiteeCredentialBroker({ stateDir: machine.stateDir, lookup: bindingId => {
+        const binding = deployment.repositories.find(item => item.id === bindingId && item.enabled)
+        if (!binding || binding.provider !== 'gitee') return undefined
+        const credential = deployment.giteeCredentials[binding.credentialId]
+        const token = credential ? process.env[credential.tokenEnv] : undefined
+        return credential && token ? { binding, login: credential.login, token } : undefined
+      } })
+      await broker.start().catch((error: unknown) => {
+        throw new SetupError('environmentFailed', { output: error instanceof Error ? error.message : String(error) })
+      })
+    }
     const feishu = await resolveFeishuBot(machine, settings.sources.feishu?.config, probe).catch((error: unknown) => {
       if (!(error instanceof SetupError)) throw error
       this.feishuProblem = error.problem
@@ -127,8 +154,8 @@ export class Setup {
     }
     await writeEnvironment(resolved, settings.executor.blockedCommands).catch(machineProblem)
     this.restoreEnvironment = applyEnvironment(this.variables, machine.stateDir, this.path)
-    await verifyEnvironment(resolved, context.subprocess, lifetime).catch((error: unknown) => {
-      this.restore()
+    await verifyEnvironment(resolved, context.subprocess, lifetime).catch(async (error: unknown) => {
+      await this.restore()
       machineProblem(error)
     })
     return resolved

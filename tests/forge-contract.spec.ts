@@ -70,6 +70,9 @@ function fakeForge(): ForgeAdapter {
     provider: 'fake',
     capabilities: { repository: 'read-write', identity: true, issues: { read: true, comment: true },
       pulls: { read: true, create: false, comment: false, reviews: false }, ci: false, execution: true },
+    gitHost: 'forge.test',
+    pullThreadId: pull => pull.displayNumber,
+    readContext: () => ({}),
     presentation: { issueUrl: (repository, number) => `${repository.webUrl}/issues/${number}`, pullUrl: (repository, number) => `${repository.webUrl}/pulls/${number}`,
       accountUrl: login => `https://forge.test/${login}` },
     async resolveRepository() {
@@ -79,8 +82,17 @@ function fakeForge(): ForgeAdapter {
     async listIssues(_binding, query) { return slice(issues, query) },
     async readIssue(_binding, displayNumber) { return issues.find(item => item.displayNumber === displayNumber)! },
     async listComments() { return { items: comments } },
+    async createComment(_binding, issue, body) {
+      return { nativeId: `c-${body.length}`, body, author, createdAt: '2026-11-01T03:00:00.000Z', updatedAt: '2026-11-01T03:00:00.000Z',
+        webUrl: `${repository.webUrl}/issues/${issue.displayNumber}#comment` }
+    },
     async listPulls(_binding, query) { return slice(pulls, query) },
     async readPull(_binding, displayNumber) { return pulls.find(item => item.displayNumber === displayNumber)! },
+    async createPull(_binding, input) {
+      return { ...pulls[0]!, nativeId: '2004', displayNumber: '4', title: input.title, body: input.body, head: { ref: input.head, sha: 'abc' },
+        base: { ref: input.base }, webUrl: `${repository.webUrl}/pulls/4` }
+    },
+    async listPullComments() { return { items: comments } },
   }
 }
 
@@ -149,10 +161,13 @@ describe('forge adapter contract', () => {
     expect(resolution).toMatchObject({ repository: { providerRepositoryId: '51207621', slug: giteeBinding.slug,
       webUrl: 'https://gitee.com/bourneW/dsh-superagent-gitee-canary', defaultBranch: 'master' },
       identity: { providerUserId: '618074', login: 'bourneW' }, push: true, credential: { reference: 'GITEE_TOKEN' } })
-    expect(resolution!.capabilities.pulls.create).toBe(false)
+    expect(resolution!.capabilities.pulls.create).toBe(true)
+    expect(resolution!.capabilities.pulls.comment).toBe(true)
+    expect(resolution!.capabilities.issues.comment).toBe(true)
     expect(resolution!.capabilities.pulls.reviews).toBe(false)
     expect(resolution!.capabilities.ci).toBe(false)
-    expect(resolution!.capabilities.execution).toBe(false)
+    expect(resolution!.capabilities.execution).toBe(true)
+    expect(resolution!.credential.commitEmail).toBe('bourneW@noreply.gitee.com')
     // The token travels in the Authorization header only: never in a URL, the resolution, or an error message.
     expect(http.urls.every(url => !url.href.includes(token))).toBe(true)
     expect(JSON.stringify(resolution)).not.toContain(token)
@@ -162,7 +177,7 @@ describe('forge adapter contract', () => {
       commentNativeId: '51958037', pullNativeId: '1446764', pullDisplay: '2', author: 'bourneW', pullsBinding: oschina })
     // Issues keep Gitee's string display number; pull requests keep the numeric id apart from the display number.
     expect(result.issues.items[0]!.threadId).toBe('34904144')
-    expect(result.unsupported).toEqual(expect.arrayContaining(['issues.comment', 'pulls.create', 'pulls.comment', 'pulls.reviews', 'ci']))
+    expect(result.unsupported).toEqual(expect.arrayContaining(['pulls.reviews', 'ci']))
   })
 
   it('pages Gitee pull requests with the provider cursors from the recorded shape', async () => {
@@ -188,6 +203,44 @@ describe('forge adapter contract', () => {
     const requests = http.urls.filter(url => url.pathname.endsWith('/comments'))
     expect(requests).toHaveLength(1)
     expect(requests[0]!.searchParams.has('since')).toBe(false)
+  })
+
+  it('creates a Gitee pull request and Issue comment, and reads pull-request comments', async () => {
+    const calls: { url: URL; method: string; body: string; authorization: string | null; contentType: string | null }[] = []
+    const pull = recorded<Record<string, unknown>>('pull.json')
+    const created = { ...pull, id: 9001, number: 9, state: 'open', merged_at: null, closed_at: null,
+      html_url: 'https://gitee.com/bourneW/dsh-superagent-gitee-canary/pulls/9', title: 'Fix the canary', body: 'body',
+      head: { ref: 'agent/fix', sha: 'abc', repo: { id: 51207621, full_name: giteeBinding.slug } },
+      base: { ref: 'master', sha: 'def', repo: { id: 51207621, full_name: giteeBinding.slug } } }
+    const review = { id: 9002, body: 'a code comment', user: recorded<Record<string, unknown>>('user.json'), created_at: '2026-11-01T12:00:00+08:00',
+      updated_at: '2026-11-01T12:00:00+08:00', html_url: 'https://gitee.com/bourneW/dsh-superagent-gitee-canary/pulls/2#note_9002' }
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input))
+      const headers = new Headers(init?.headers)
+      calls.push({ url, method: init?.method ?? 'GET', body: String(init?.body ?? ''), authorization: headers.get('authorization'),
+        contentType: headers.get('content-type') })
+      if (url.pathname.endsWith('/pulls')) return new Response(JSON.stringify(created), { status: 201 })
+      if (url.pathname.endsWith('/issues/IKS47K/comments')) {
+        return new Response(JSON.stringify({ id: 9003, body: 'result', user: recorded('user.json'), created_at: '2026-11-01T12:00:00+08:00' }),
+          { status: 201 })
+      }
+      if (url.pathname.endsWith('/pulls/9/comments')) return new Response(JSON.stringify([review]), { status: 200, headers: { total_page: '1' } })
+      return new Response(JSON.stringify({ message: 'Not Found' }), { status: 404 })
+    })
+    const context: ForgeReadContext = { token, fetch: fetch as unknown as typeof globalThis.fetch }
+    const pullResult = await giteeForgeAdapter.createPull(giteeBinding, { title: 'Fix the canary', body: 'body', head: 'agent/fix', base: 'master' }, context)
+    expect(pullResult).toMatchObject({ nativeId: '9001', displayNumber: '9', state: 'open', head: { ref: 'agent/fix', repositoryId: '51207621' },
+      base: { ref: 'master', repositorySlug: giteeBinding.slug } })
+    expect(giteeForgeAdapter.pullThreadId(pullResult)).toBe('pull:9001')
+    const comment = await giteeForgeAdapter.createComment(giteeBinding, { displayNumber: 'IKS47K' }, 'result', context)
+    expect(comment).toMatchObject({ nativeId: '9003', body: 'result', author: { login: 'bourneW' } })
+    const comments = await giteeForgeAdapter.listPullComments(giteeBinding, pullResult, {}, context)
+    expect(comments.items).toEqual([expect.objectContaining({ nativeId: '9002', body: 'a code comment' })])
+    // The token travels only in the Authorization header; form bodies carry no credential, and no URL carries one.
+    expect(calls.every(call => call.url.href.includes(token) === false && call.body.includes(token) === false)).toBe(true)
+    expect(calls.every(call => call.authorization === `token ${token}`)).toBe(true)
+    expect(calls.find(call => call.url.pathname.endsWith('/pulls'))?.body).toContain('head=agent%2Ffix')
+    expect(calls.find(call => call.url.pathname.endsWith('/issues/IKS47K/comments'))?.body).toBe('body=result')
   })
 
   it('normalizes Gitee HTTP failures without echoing the token', async () => {
@@ -216,7 +269,5 @@ describe('Gitee setup validation', () => {
       : new Response(JSON.stringify(repo), { status: 200 }))
     await expect(giteeForgeAdapter.resolveRepository({ sourceId: 'gitee', config: { repository: giteeBinding.slug, tokenEnv: 'GITEE_TOKEN' } },
       { ...environment({ GITEE_TOKEN: token }), fetch })).rejects.toMatchObject({ code: 'giteeRepositoryReadOnly', values: { repository: giteeBinding.slug } })
-    // Reads stay available without a write capability: no create, comment, review, or CI operation is promised.
-    expect(giteeForgeAdapter.capabilities.pulls.create).toBe(false)
   })
 })

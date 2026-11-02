@@ -1,14 +1,19 @@
 /** Pull request binding, lifecycle observation, and terminal IM notification helpers. */
 import { z } from 'zod'
-import { key, liveTicket, type Follow, type OutboundMessage, type ThreadFact, type Ticket } from '../core/index.ts'
+import { key, type Follow, type OutboundMessage, type ThreadFact, type Ticket } from '../core/index.ts'
 import type { GithubCredential } from '../deployment.ts'
 import type { RepositoryBinding } from '../repository.ts'
 import { sameName } from '../infra/text.ts'
+import { claimPull as claimForgePull, ticketBranch } from '../forge/pulls.ts'
+import type { ForgePull } from '../forge/ports.ts'
+import { githubForgeAdapter } from '../forge/github.ts'
 import type { SourceContext } from './host.ts'
 import { githubPage, UserSchema } from './github-trigger.ts'
 
+export { ticketBranch } from '../forge/pulls.ts'
+
 const PullSchema = z.looseObject({
-  title: z.string().optional(), state: z.string(), html_url: z.string(), user: UserSchema,
+  id: z.number().optional(), title: z.string().optional(), state: z.string(), html_url: z.string(), user: UserSchema,
   body: z.string().nullish(), created_at: z.string().optional(),
   merged: z.boolean().optional(), merged_at: z.string().nullish(), closed_at: z.string().nullish(), auto_merge: z.unknown().optional(),
   head: z.looseObject({ sha: z.string(), ref: z.string(), repo: z.looseObject({ full_name: z.string() }).nullish() }),
@@ -31,9 +36,6 @@ export const pullOf = (ticket: Pick<Ticket, 'follows'>, repositoryId?: string): 
 export const agentPull = (pr: { user: { login: string }; head?: { repo?: { full_name: string } | null } | null },
   credential: Pick<GithubCredential, 'login'>, binding: Pick<RepositoryBinding, 'slug'>): boolean =>
   sameName(pr.user.login, credential.login) && sameName(pr.head?.repo?.full_name ?? '', binding.slug)
-/** True when a branch belongs to the ticket: its last path segment is the ticket's short name, such as `agent/<name>`. */
-export const ticketBranch = (ticket: Pick<Ticket, 'execution'>, ref: string): boolean =>
-  !!ticket.execution?.name && ref.split('/').at(-1) === ticket.execution.name
 const AUTO_MERGE_ON: ThreadFact = { label: { zh: '自动合并', en: 'Auto-merge' }, value: { zh: '已开启', en: 'on' } }
 /** The credential and binding governing a GitHub Source context; throws for a Source without a repository binding. */
 export function pullHost(ctx: SourceContext): { sourceId: string; binding: RepositoryBinding; credential: GithubCredential } {
@@ -43,30 +45,27 @@ export function pullHost(ctx: SourceContext): { sourceId: string; binding: Repos
   if (!credential) throw new Error(`Repository ${binding.id} has no resolved credential ${binding.credentialId}`)
   return { sourceId: ctx.sourceId, binding, credential }
 }
+/** The provider-neutral record of a GitHub pull request, keeping the native ID when the read supplied it. */
+export function forgePull(pr: Pull): ForgePull {
+  return {
+    nativeId: pr.id !== undefined ? String(pr.id) : String(pr.number), displayNumber: String(pr.number), title: pr.title ?? '', body: pr.body ?? '',
+    state: pr.merged || pr.merged_at ? 'merged' : pr.state === 'closed' ? 'closed' : 'open',
+    author: { providerUserId: pr.user.id !== undefined ? String(pr.user.id) : pr.user.login, login: pr.user.login,
+      ...pr.user.type === 'Bot' ? { bot: true } : {} },
+    createdAt: pr.created_at ?? '', updatedAt: pr.closed_at ?? pr.created_at ?? '', ...pr.merged_at ? { mergedAt: pr.merged_at } : {},
+    ...pr.closed_at ? { closedAt: pr.closed_at } : {}, webUrl: pr.html_url, head: { ref: pr.head.ref, sha: pr.head.sha,
+      ...pr.head.repo?.full_name ? { repositorySlug: pr.head.repo.full_name } : {} }, base: { ref: '' },
+  }
+}
 /**
  * Validates and binds an open PR to a ticket when the PR is either the ticket's origin PR or an agent-authored PR on the ticket's
  * branch, enforcing that one PR binds to at most one open ticket and that the PR belongs to the ticket's repository binding.
  * Returns an error message when binding is rejected, or undefined when the PR is bound or when the PR is not open (which is not an error).
  */
 export function claimPull(ctx: SourceContext, ticketId: string, pr: Pull): string | undefined {
-  const ticket = ctx.tickets.get(ticketId)
-  if (!ticket || !liveTicket(ticket)) return 'Ticket ended because its PR was closed'
-  const { sourceId, binding, credential } = pullHost(ctx)
-  if ((ticket.repositoryId ?? null) !== binding.id) {
-    return `PR belongs to repository ${binding.id}, but this ticket belongs to ${ticket.repositoryId ?? 'no repository'}; a PR cannot be claimed across repository bindings`
-  }
-  const source = ctx.triggers.get(ticket.origin.triggerId)
-  const started = source?.source === sourceId && source.repositoryId === binding.id && source.meta.isPr === true && source.meta.number === pr.number
-  const opened = agentPull(pr, credential, binding) && ticketBranch(ticket, pr.head.ref)
-  if (!started && !opened) {
-    return `PR does not belong to this ticket: use the source PR or a PR by ${credential.login} in ${binding.slug} from a branch whose last path segment is DSH_SUPERAGENT_NAME; omit pr_number when no PR exists`
-  }
-  const owner = ctx.tickets.open().filter(item => (item.repositoryId ?? null) === binding.id)
-    .find(item => pullsOf(item, true, binding.id).includes(pr.number))
-  if (owner && owner.id !== ticketId) return 'PR already belongs to another active ticket'
-  const follow = ticket.follows?.find(item => item.thread === `${sourceId}:${pr.number}`)
-  if (pr.state === 'open' && (!follow || follow.closed || (opened && !follow.own))) bind(ctx, ticketId, pr, opened, binding.id)
-  return undefined
+  const host = pullHost(ctx)
+  return claimForgePull({ binding: host.binding, adapter: githubForgeAdapter, sourceId: host.sourceId, login: host.credential.login,
+    tickets: ctx.tickets, threads: ctx.threads, triggers: ctx.triggers }, ticketId, forgePull(pr))
 }
 /**
  * Reconciles a polled PR's open/merged/closed state and auto-merge fact with any bound or branch-matching ticket.
@@ -88,12 +87,6 @@ export async function observePull(ctx: SourceContext, pr: Pull): Promise<boolean
   }
   ctx.threads.describe(`${sourceId}:${pr.number}`, { facts: { autoMerge: !ended && pr.auto_merge != null ? AUTO_MERGE_ON : null } })
   return ended
-}
-function bind(ctx: SourceContext, ticketId: string, pr: Pull, own: boolean, repositoryId: string): void {
-  ctx.atomic(() => {
-    ctx.tickets.bindThread(ticketId, { source: ctx.sourceId, id: String(pr.number), repositoryId }, own)
-    ctx.threads.patch(`${ctx.sourceId}:${pr.number}`, { number: pr.number, isPr: true, url: pr.html_url, prAuthor: pr.user.login })
-  })
 }
 /**
  * Reports a merged or closed PR once to the open tickets that follow it, whose end the core decides.

@@ -19,7 +19,7 @@ export interface ShellEnvironmentHost {
   /** The repository binding a Ticket owns, if any. */
   repositoryOf(ticket: Ticket): RepositoryBinding | undefined
   /** The account credential of a binding, when setup has resolved it. */
-  credentialOf(binding: RepositoryBinding): { login: string; noreply: string } | undefined
+  credentialOf(binding: RepositoryBinding): { login: string; commitEmail: string } | undefined
   /** The Trigger a Ticket was accepted from, for its native number and whether it was a PR. */
   triggerOf(ticket: Ticket): { repositoryId?: string | null; meta: Record<string, unknown> } | undefined
 }
@@ -40,6 +40,11 @@ export function registerShellEnvironment(host: ShellEnvironmentHost): () => void
       DSH_SUPERAGENT_TICKET: declare('The ticket id of this worker Session; empty in the main Session.'),
       DSH_SUPERAGENT_DIR: declare('The ticket directory.'),
       DSH_SUPERAGENT_NAME: declare('The ticket short name.'),
+      DSH_SUPERAGENT_REPOSITORY_ID: declare('The ticket\'s RepositoryBinding; empty without one.'),
+      DSH_SUPERAGENT_REPOSITORY_PROVIDER: declare('The ticket binding\'s forge, such as github or gitee.'),
+      DSH_SUPERAGENT_REPOSITORY: declare('The repository binding of this ticket, owner/name.'),
+      DSH_SUPERAGENT_REPOSITORY_ACCOUNT: declare('The account of this ticket binding.'),
+      DSH_SUPERAGENT_REPOSITORY_COMMIT_EMAIL: declare('The commit email of this ticket binding account.'),
       DSH_SUPERAGENT_GITHUB_REPOSITORY: declare('The repository binding of this ticket, owner/name.'),
       DSH_SUPERAGENT_GITHUB_ACCOUNT: declare('The GitHub account of this ticket binding.'),
       DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL: declare('The commit email of this ticket binding account.'),
@@ -62,9 +67,14 @@ export function registerShellEnvironment(host: ShellEnvironmentHost): () => void
             DSH_SUPERAGENT_TICKET: ticket.id,
             DSH_SUPERAGENT_DIR: ticket.execution?.directory ?? '',
             DSH_SUPERAGENT_NAME: ticket.execution?.name ?? '',
+            DSH_SUPERAGENT_REPOSITORY_ID: binding?.id ?? '',
+            DSH_SUPERAGENT_REPOSITORY_PROVIDER: binding?.provider ?? '',
+            DSH_SUPERAGENT_REPOSITORY: binding?.slug ?? '',
+            DSH_SUPERAGENT_REPOSITORY_ACCOUNT: credential?.login ?? '',
+            DSH_SUPERAGENT_REPOSITORY_COMMIT_EMAIL: credential?.commitEmail ?? '',
             DSH_SUPERAGENT_GITHUB_REPOSITORY: binding?.slug ?? '',
             DSH_SUPERAGENT_GITHUB_ACCOUNT: credential?.login ?? '',
-            DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL: credential?.noreply ?? '',
+            DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL: credential?.commitEmail ?? '',
             DSH_SUPERAGENT_GITHUB_NUMBER: number ? String(number) : '',
             DSH_SUPERAGENT_GITHUB_PR_HEAD: number && trigger?.meta.isPr === true ? `refs/pull/${number}/head` : '',
           }
@@ -72,6 +82,8 @@ export function registerShellEnvironment(host: ShellEnvironmentHost): () => void
         // A worker Session whose Ticket cannot be read still gets the shell marker, so its shim denies repository access.
         if (sessionId.startsWith('worker-')) {
           return { DSH_SUPERAGENT_TICKET: sessionId.slice('worker-'.length), DSH_SUPERAGENT_DIR: '', DSH_SUPERAGENT_NAME: '',
+            DSH_SUPERAGENT_REPOSITORY_ID: '', DSH_SUPERAGENT_REPOSITORY_PROVIDER: '', DSH_SUPERAGENT_REPOSITORY: '',
+            DSH_SUPERAGENT_REPOSITORY_ACCOUNT: '', DSH_SUPERAGENT_REPOSITORY_COMMIT_EMAIL: '',
             DSH_SUPERAGENT_GITHUB_REPOSITORY: '', DSH_SUPERAGENT_GITHUB_ACCOUNT: '', DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL: '',
             DSH_SUPERAGENT_GITHUB_NUMBER: '', DSH_SUPERAGENT_GITHUB_PR_HEAD: '' }
         }

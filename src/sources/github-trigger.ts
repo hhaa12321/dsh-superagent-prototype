@@ -20,7 +20,7 @@ export function githubAddress(url: string, repository: string): { number: number
   return { number: Number(match[3]), pr: match[2]!.toLowerCase() !== 'issues', ...match[4] ? { discussion: Number(match[4]) } : {} }
 }
 /** GitHub returns a deleted account as `null` and displays it as `ghost`. */
-export const UserSchema = z.looseObject({ login: z.string(), type: z.string().optional() }).nullable()
+export const UserSchema = z.looseObject({ id: z.number().optional(), login: z.string(), type: z.string().optional() }).nullable()
   .transform(user => user ?? { login: 'ghost', type: 'User' })
 /**
  * A GitHub comment or review; a review carries `state` and `commit_id`, and an inline review comment carries its file,

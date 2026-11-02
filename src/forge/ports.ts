@@ -1,11 +1,12 @@
 /**
- * The forge capability boundary: narrow ports for repository resolution and identity/access, Issue and comment reads,
- * pull-request reads, and presentation. Reads return provider-neutral records that still carry every native identity the
- * provider exposes (its immutable ID separately from its display number), so the domain never flattens two providers into
- * one provider's response object and never hides an ID behind a display value.
+ * The forge capability boundary: narrow ports for repository resolution and identity/access, Issue and comment reads and
+ * writes, pull-request reads, creation, claims, comment reads, and presentation. Records returned here still carry every
+ * native identity the provider exposes (its immutable ID separately from its display number), so the domain never
+ * flattens two providers into one provider's response object and never hides an ID behind a display value.
  */
 import type { RepositoryBinding } from '../repository.ts'
 import type { Commands } from '../infra/commands.ts'
+import type { Deployment } from '../deployment.ts'
 import type { ForgeCapabilities } from './capabilities.ts'
 
 /** A person, bot, or agent in a provider's own identity space. */
@@ -13,7 +14,7 @@ export interface ForgeActor { providerUserId: string; login: string; bot?: boole
 /** One repository as its provider identifies it: the immutable ID is identity, the slug only display and lookup input. */
 export interface ForgeRepository { providerRepositoryId: string; slug: string; webUrl: string; defaultBranch: string }
 /** The authenticated account behind a binding's credential reference. */
-export interface ForgeIdentity { providerUserId: string; login: string; name?: string }
+export interface ForgeIdentity { providerUserId: string; login: string; name?: string; email?: string }
 /** An Issue as the provider reports it; `threadId` is the provider's native thread identity and never the display number. */
 export interface ForgeIssue {
   nativeId: string
@@ -53,9 +54,12 @@ export interface ForgePull {
   mergedAt?: string
   closedAt?: string
   webUrl: string
-  head: { ref: string; sha: string }
-  base: { ref: string }
+  /** The source branch; its repository facts, when the provider reports them, reject a PR from another repository. */
+  head: { ref: string; sha: string; repositoryId?: string; repositorySlug?: string }
+  base: { ref: string; repositoryId?: string; repositorySlug?: string }
 }
+/** What creating a pull request needs, in the provider's own branch terms. */
+export interface ForgePullInput { title: string; body: string; head: string; base: string }
 /** A page of reads; `next` is the provider's cursor for the following page, when there is one. */
 export interface ForgePage<T> { items: T[]; next?: string | undefined }
 /** Bounded read query shared by list ports: an ISO timestamp floor and the provider cursor. */
@@ -117,12 +121,29 @@ export interface ForgeAdapter {
   readonly provider: string
   readonly capabilities: ForgeCapabilities
   readonly presentation: ForgePresentation
+  /** The provider's Git host, used to select and constrain the binding's Git credential helper. */
+  readonly gitHost: string
+  /**
+   * Builds the per-call context for this binding: a token resolved from the credential reference, or the binding's
+   * commands. `env` is the host process environment, which holds a token only while it is in use.
+   */
+  readContext(input: { deployment: Deployment; binding: RepositoryBinding; commands: Commands; env: Record<string, string | undefined> }): ForgeReadContext
   /** Resolves one configured Source, or `undefined` when its configuration names no repository to bind yet. */
   resolveRepository(input: ForgeResolveInput, environment: ForgeSetupEnvironment): Promise<ForgeResolution | undefined>
   listIssues(binding: RepositoryBinding, query: ForgeReadQuery, context: ForgeReadContext): Promise<ForgePage<ForgeIssue>>
   readIssue(binding: RepositoryBinding, displayNumber: string, context: ForgeReadContext): Promise<ForgeIssue>
-  listComments(binding: RepositoryBinding, issue: ForgeIssue, query: ForgeReadQuery, context: ForgeReadContext): Promise<ForgePage<ForgeComment>>
+  listComments(binding: RepositoryBinding, issue: Pick<ForgeIssue, 'displayNumber'>, query: ForgeReadQuery, context: ForgeReadContext): Promise<ForgePage<ForgeComment>>
+  /** Writes one comment on an Issue; idempotency belongs to the caller's marker, not this port. */
+  createComment(binding: RepositoryBinding, issue: Pick<ForgeIssue, 'displayNumber'>, body: string, context: ForgeReadContext): Promise<ForgeComment>
   listPulls(binding: RepositoryBinding, query: ForgeReadQuery, context: ForgeReadContext): Promise<ForgePage<ForgePull>>
   /** Reads a pull request by its display number, which the provider's read endpoint uses; the result keeps its native ID. */
   readPull(binding: RepositoryBinding, displayNumber: string, context: ForgeReadContext): Promise<ForgePull>
+  createPull(binding: RepositoryBinding, input: ForgePullInput, context: ForgeReadContext): Promise<ForgePull>
+  /** Reads a pull request's own comments; providers without a separate PR comment endpoint may repeat its Issue comments. */
+  listPullComments(binding: RepositoryBinding, pull: ForgePull, query: ForgeReadQuery, context: ForgeReadContext): Promise<ForgePage<ForgeComment>>
+  /**
+   * The provider-specific Thread ID part a pull request is followed by. It includes the provider's immutable PR ID for a
+   * provider whose Issue and PR streams can share display numbers, and the display number where that is stable.
+   */
+  pullThreadId(pull: ForgePull): string
 }

@@ -11,11 +11,26 @@ export const EXECUTOR_VARIABLES: readonly (VariableSpec & { ticket?: true })[] =
   { key: 'DSH_SUPERAGENT_DIR', ticket: true, description: { zh: '这个工单的执行目录；执行器 Session 在其中工作', en: 'This ticket\'s directory; the executor Session works in it' } },
   { key: 'DSH_SUPERAGENT_NAME', ticket: true, description: { zh: '工单的短名，也是执行目录的名字', en: 'The ticket\'s short name, also its directory\'s name' } },
   { key: 'DSH_SUPERAGENT_TICKET', ticket: true, description: { zh: '工单 id', en: 'The ticket id' } },
+  { key: 'DSH_SUPERAGENT_REPOSITORY_ID', ticket: true, description: { zh: '工单的 RepositoryBinding，例如 github:101 或 gitee:51207621',
+    en: 'The ticket\'s RepositoryBinding, such as github:101 or gitee:51207621' } },
+  { key: 'DSH_SUPERAGENT_REPOSITORY_PROVIDER', ticket: true, description: { zh: '工单绑定的 forge：github 或 gitee', en: 'The binding\'s forge: github or gitee' } },
+  { key: 'DSH_SUPERAGENT_REPOSITORY', ticket: true, description: { zh: '工单绑定的仓库，owner/name', en: 'The binding\'s repository, owner/name' } },
+  { key: 'DSH_SUPERAGENT_REPOSITORY_ACCOUNT', ticket: true, description: { zh: '工单绑定的账号', en: 'The binding\'s account login' } },
+  { key: 'DSH_SUPERAGENT_REPOSITORY_COMMIT_EMAIL', ticket: true, description: { zh: '这个工单的提交邮箱', en: 'The commit email for this ticket' } },
   { key: 'DSH_SUPERAGENT_BLOCKED_COMMANDS', description: { zh: '这个执行环境禁止调用的命令，以空格分隔；不要运行它们', en: 'Commands blocked in this execution environment, separated by spaces; never run them' } },
 ]
 export interface Variable { key: string; value: string; description: Localized; owner: string }
 
 export const executionRoot = (settings: Settings, stateDir: string): string => settings.executor.directory || join(stateDir, 'work')
+
+/** The account facts of one binding: the login and the commit email a worker commits with. */
+export function bindingAccount(deployment: Deployment, binding: { provider: string; credentialId: string }):
+  { login: string; commitEmail: string } | undefined {
+  const github = deployment.credentials[binding.credentialId]
+  if (github) return { login: github.login, commitEmail: github.noreply }
+  const gitee = deployment.giteeCredentials[binding.credentialId]
+  return gitee ? { login: gitee.login, commitEmail: gitee.commitEmail ?? `${gitee.login}@noreply.gitee.com` } : undefined
+}
 
 /** Lists all declared variables grouped by owner; `enabled` is false for Sources that are currently switched off. */
 export function declaredVariables(sources: SourceRegistry, settings?: Settings): { owner: string; enabled: boolean; variables: readonly VariableSpec[] }[] {
@@ -31,7 +46,13 @@ export function declaredVariables(sources: SourceRegistry, settings?: Settings):
 export function environmentOf(input: { deployment: Deployment; sources: SourceRegistry; settings: Settings;
   ticket?: { id: string; name: string; directory: string }; trigger?: Trigger; repositoryId?: string }): Variable[] {
   const { deployment, sources, settings, ticket, trigger, repositoryId } = input
-  const executor: Record<string, string> = { DSH_SUPERAGENT_BLOCKED_COMMANDS: settings.executor.blockedCommands.join(' '), ...ticket ? { DSH_SUPERAGENT_DIR: ticket.directory, DSH_SUPERAGENT_NAME: ticket.name, DSH_SUPERAGENT_TICKET: ticket.id } : {} }
+  const binding = repositoryId ? sources.bindingById(repositoryId) : undefined
+  const account = binding ? bindingAccount(deployment, binding) : undefined
+  const executor: Record<string, string> = { DSH_SUPERAGENT_BLOCKED_COMMANDS: settings.executor.blockedCommands.join(' '),
+    ...ticket ? { DSH_SUPERAGENT_DIR: ticket.directory, DSH_SUPERAGENT_NAME: ticket.name, DSH_SUPERAGENT_TICKET: ticket.id,
+      DSH_SUPERAGENT_REPOSITORY_ID: binding?.id ?? '', DSH_SUPERAGENT_REPOSITORY_PROVIDER: binding?.provider ?? '',
+      DSH_SUPERAGENT_REPOSITORY: binding?.slug ?? '', DSH_SUPERAGENT_REPOSITORY_ACCOUNT: account?.login ?? '',
+      DSH_SUPERAGENT_REPOSITORY_COMMIT_EMAIL: account?.commitEmail ?? '' } : {} }
   const result: Variable[] = EXECUTOR_VARIABLES.filter(spec => !spec.ticket || ticket).map(spec => ({ key: spec.key, value: executor[spec.key] ?? '', description: spec.description, owner: 'executor' }))
   // Without a ticket the values document what workers receive, so the first repository-bound Source illustrates them.
   let documented = false

@@ -90,7 +90,7 @@ function harness(options: { accounts?: Record<string, string>; observePulls?: bo
   const engine = new Engine({ repo: store, scope: sources, policy: () => settingsPolicy(store.settings(), sources), assessor,
     executor: { start: ticket => { starts.push(ticket.id) }, deliver: vi.fn(), stop: vi.fn() }, outbox: { send: vi.fn(), status: () => undefined, withdraw: vi.fn() },
     threadRepository: ref => sources.bindingOf(ref.source)?.id ?? ref.repositoryId ?? null, repositoryExists: id => !!store.repositories.get(id),
-    // The Runtime wires the same provider-neutral capability check; a Gitee binding reports execution false in Phase 3.
+    // The Runtime wires the same provider-neutral capability check; Phase 4's Gitee binding reports execution supported.
     executionAllowed: id => id === null ? true : store.repositories.get(id)?.capabilities.execution === true,
     emit: () => {}, prepareTicket: ticket => ticket })
   const deps: SourceContextDeps = { store, engine, outbox: { send: vi.fn() }, commands: testCommands(() => deployment, {}, undefined, null),
@@ -165,16 +165,16 @@ describe('Gitee read path', () => {
         isPr: true, provider: 'gitee' })])
       expect(threadKey(pulls[0]!.threads[0]!)).toBe('gitee-a:pull:1446764')
       expect(h.store.tickets.open()).toEqual([])
-      expect(h.deployment.repositories[0]!.capabilities.pulls).toMatchObject({ create: false, comment: false, reviews: false })
+      expect(h.deployment.repositories[0]!.capabilities.pulls).toMatchObject({ create: true, comment: true, reviews: false })
     } finally { h.close() }
   })
 
-  it('does not accept a Gitee Trigger whose binding has no execution capability, so no Assignment is runnable', () => {
+  it('accepts a Gitee Trigger through its binding\'s execution capability, creating one runnable Ticket', () => {
     const h = harness()
     try {
-      // Phase 3's Gitee adapter reports execution unsupported; a GitHub adapter reports it supported.
-      expect(A.capabilities.execution).toBe(false)
-      expect(giteeForgeAdapter.capabilities.execution).toBe(false)
+      // Phase 4 implements the complete write path, so the Gitee adapter reports execution supported.
+      expect(A.capabilities.execution).toBe(true)
+      expect(giteeForgeAdapter.capabilities.execution).toBe(true)
       const issue = { nativeId: '9001', displayNumber: 'IKS9001', threadId: '9001', title: 'Fix the login',
         body: '@agent-bot please fix the login', author: { providerUserId: 'u-alice', login: 'alice' }, createdAt: at, updatedAt: at,
         webUrl: `${A.webUrl}/issues/IKS9001`, comments: 0 }
@@ -184,10 +184,10 @@ describe('Gitee read path', () => {
       const candidate = h.candidates.at(-1)!
       const decision = h.engine.decide(trigger.id, { kind: 'accept', title: 'Fix the login', scope: 'the login form', reason: 'asked',
         evalId: candidate.evalId })
-      expect(decision).toMatchObject({ kind: 'ignore', reason: [{ code: 'executionUnsupported' }] })
-      expect(decision.ticketId).toBeUndefined()
-      expect(h.store.tickets.list()).toEqual([])
-      expect(h.starts).toEqual([])
+      expect(decision.kind).toBe('accept')
+      const ticket = h.store.tickets.get(decision.ticketId!)!
+      expect(ticket.repositoryId).toBe(A.id)
+      expect(h.starts).toEqual([ticket.id])
     } finally { h.close() }
   })
 
@@ -265,7 +265,7 @@ describe('Gitee read path', () => {
       expect(cardB.repository).toMatchObject({ account: 'other-agent', provider: 'gitee', providerRepositoryId: '51207622' })
       expect(cardA.repository!.account).not.toBe(cardB.repository!.account)
       expect(settings.repositories.map(item => [item.id, item.account])).toEqual([[A.id, 'bourneW'], [B.id, 'other-agent']])
-      expect(cardA.repository!.capabilities.pulls).toMatchObject({ create: false, reviews: false })
+      expect(cardA.repository!.capabilities.pulls).toMatchObject({ create: true, reviews: false })
     } finally { h.close() }
   })
 
@@ -304,9 +304,10 @@ describe('Gitee read path', () => {
     expect(deployment.credentials).toEqual({})
     expect(deployment.repositories).toEqual([expect.objectContaining({ id: A.id, provider: 'gitee', providerRepositoryId: '51207621',
       slug: A.slug, credentialId: 'gitee:gitee', capabilities: expect.objectContaining({ ci: false }) })])
-    expect(deployment.giteeCredentials['gitee:gitee']).toEqual({ tokenEnv: 'GITEE_TOKEN', login: 'bourneW', userId: '618074' })
+    expect(deployment.giteeCredentials['gitee:gitee']).toEqual({ tokenEnv: 'GITEE_TOKEN', login: 'bourneW', userId: '618074',
+      commitEmail: 'bourneW@noreply.gitee.com' })
     expect(JSON.stringify(deployment)).not.toContain(token)
-    expect(deployment.repositories[0]!.capabilities.pulls.create).toBe(false)
+    expect(deployment.repositories[0]!.capabilities.pulls.create).toBe(true)
     expect(deployment.repositories[0]!.capabilities.pulls.reviews).toBe(false)
   })
 })

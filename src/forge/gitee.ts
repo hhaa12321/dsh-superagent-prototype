@@ -1,30 +1,31 @@
 /**
  * Gitee API v5 behind the forge capability boundary: repository resolution with authenticated identity and push access,
- * Issue and comment reads, and pull-request reads. Uses Node `fetch`, `AbortSignal`, `URL`, and `zod`, with every response
- * validated at the adapter boundary. The token is resolved from a credential reference and never logged, persisted, or
- * placed in a URL.
+ * Issue and comment reads and writes, and pull-request reads, creation, and comment reads. Uses Node `fetch`,
+ * `AbortSignal`, `URL`, and `zod`, with every response validated at the adapter boundary. The token is resolved from a
+ * credential reference and never logged, persisted, or placed in a URL.
  */
 import { z } from 'zod'
 import type { RepositoryBinding } from '../repository.ts'
 import { GiteeAccountsSchema } from './config.ts'
 import { SetupError } from '../setup.ts'
 import type { ForgeCapabilities } from './capabilities.ts'
-import type { ForgeAdapter, ForgeActor, ForgeComment, ForgeIssue, ForgePage, ForgePull, ForgeReadContext, ForgeReadQuery, ForgeResolveInput,
-  ForgeResolution, ForgeSetupEnvironment } from './ports.ts'
+import type { ForgeAdapter, ForgeActor, ForgeComment, ForgeIssue, ForgePage, ForgePull, ForgePullInput, ForgeReadContext, ForgeReadQuery,
+  ForgeResolveInput, ForgeResolution, ForgeSetupEnvironment } from './ports.ts'
 
 /** Default API base; tests pass a stub transport rather than another URL. */
 export const GITEE_API = 'https://gitee.com/api/v5'
 const PAGE_SIZE = 100
 const TIMEOUT_MS = 30_000
 /**
- * The operations this adapter implements. Issue and pull requests are read-only: Phase 3 has no Gitee writes, CI, or
- * review APIs, and the panel reports that rather than failing a generic read.
+ * The operations this adapter implements. Gitee supports Issue and pull-request comments, pull-request creation, and the
+ * complete write path a Ticket needs; it reports no review API or CI.
  */
 const GITEE_CAPABILITIES: ForgeCapabilities = {
-  repository: 'read-write', identity: true, issues: { read: true, comment: false },
-  pulls: { read: true, create: false, comment: false, reviews: false }, ci: false, execution: false,
+  repository: 'read-write', identity: true, issues: { read: true, comment: true },
+  pulls: { read: true, create: true, comment: true, reviews: false }, ci: false, execution: true,
 }
-const GiteeUserSchema = z.looseObject({ login: z.string(), id: z.number().int().positive().optional(), name: z.string().nullish() })
+const GiteeUserSchema = z.looseObject({ login: z.string(), id: z.number().int().positive().optional(), name: z.string().nullish(),
+  email: z.string().nullish() })
 const GiteeRepositorySchema = z.looseObject({
   id: z.union([z.number().int().positive(), z.string().regex(/^[0-9]+$/)]),
   full_name: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
@@ -38,12 +39,19 @@ const GiteeIssueSchema = z.looseObject({
 })
 const GiteeCommentSchema = z.looseObject({
   id: z.number().int().positive(), body: z.string().nullish(), user: GiteeUserSchema, created_at: z.string(), updated_at: z.string().nullish(),
+  html_url: z.string().nullish(),
 })
+const GiteeRepoRefSchema = z.looseObject({
+  id: z.union([z.number().int().positive(), z.string().regex(/^[0-9]+$/)]).nullish(),
+  full_name: z.string().nullish(), html_url: z.string().nullish(),
+})
+/** A pull request's branch is an object in list and detail responses; a create response may report only its name. */
+const GiteePullRefSchema = z.union([z.string(), z.looseObject({ ref: z.string(), sha: z.string().nullish(), repo: GiteeRepoRefSchema.nullish() })])
 const GiteePullSchema = z.looseObject({
   id: z.number().int().positive(), number: z.number().int().positive(), title: z.string(), body: z.string().nullish(),
   state: z.enum(['open', 'closed', 'merged']), user: GiteeUserSchema, created_at: z.string(), updated_at: z.string(),
   merged_at: z.string().nullish(), closed_at: z.string().nullish(), html_url: z.string(),
-  head: z.looseObject({ ref: z.string(), sha: z.string().nullish() }), base: z.looseObject({ ref: z.string() }),
+  head: GiteePullRefSchema, base: GiteePullRefSchema,
 })
 
 /** A provider HTTP failure, normalized to its status and a sanitized provider message without the request URL or token. */
@@ -86,6 +94,35 @@ async function request<T>(path: string, schema: z.ZodType<T>, context: ForgeRead
   if (!value.success) throw new ForgeHttpError(`Gitee returned an unexpected ${path.split('?')[0]} response`, response.status, 'gitee')
   return { value: value.data, headers: response.headers }
 }
+/** One authenticated form-encoded write against a Gitee API base, validated by `zod` before any caller sees it. */
+async function submit<T>(path: string, schema: z.ZodType<T>, form: Record<string, string>, context: ForgeReadContext): Promise<T> {
+  const token = context.token
+  if (!token) throw new Error('The Gitee credential reference did not resolve a token')
+  const url = new URL(`${GITEE_API}${path}`)
+  const fetchImpl = context.fetch ?? globalThis.fetch
+  let response: Response
+  try {
+    response = await fetchImpl(url, {
+      method: 'POST',
+      headers: { authorization: `token ${token}`, accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(form),
+      signal: context.signal ? AbortSignal.any([context.signal, AbortSignal.timeout(TIMEOUT_MS)]) : AbortSignal.timeout(TIMEOUT_MS),
+    })
+  } catch (error) {
+    if (context.signal?.aborted) throw error
+    throw new ForgeHttpError(`Gitee request failed: ${error instanceof Error ? error.message : String(error)}`, 0, 'gitee')
+  }
+  const text = await response.text()
+  let parsed: unknown
+  try { parsed = text ? JSON.parse(text) : undefined } catch { parsed = undefined }
+  if (!response.ok) {
+    const message = parsed && typeof parsed === 'object' && 'message' in parsed ? String((parsed as { message: unknown }).message) : response.statusText
+    throw new ForgeHttpError(`Gitee API ${response.status}: ${json(message, token)}`, response.status, 'gitee')
+  }
+  const value = schema.safeParse(parsed)
+  if (!value.success) throw new ForgeHttpError(`Gitee returned an unexpected ${path.split('?')[0]} response`, response.status, 'gitee')
+  return value.data
+}
 /** Next page from Gitee's `total_page`/`total_count` headers, or from a full page when they are absent. */
 function nextPage(headers: Headers, page: number, count: number, limit: number): string | undefined {
   const totalPage = Number(headers.get('total_page') ?? '')
@@ -115,14 +152,20 @@ const mapIssue = (issue: z.infer<typeof GiteeIssueSchema>): ForgeIssue => ({
 })
 const mapComment = (comment: z.infer<typeof GiteeCommentSchema>): ForgeComment => ({
   nativeId: String(comment.id), body: comment.body ?? '', author: actor(comment.user), createdAt: normalized(comment.created_at),
-  updatedAt: normalized(comment.updated_at ?? comment.created_at),
+  updatedAt: normalized(comment.updated_at ?? comment.created_at), ...comment.html_url ? { webUrl: comment.html_url } : {},
 })
+/** One side of a pull request: its branch, head SHA, and the repository facts a claim can compare to the binding. */
+function branchOf(side: z.infer<typeof GiteePullRefSchema>): ForgePull['head'] {
+  if (typeof side === 'string') return { ref: side.split(':').at(-1) ?? side, sha: '' }
+  return { ref: side.ref, sha: side.sha ?? '', ...side.repo?.id ? { repositoryId: String(side.repo.id) } : {},
+    ...side.repo?.full_name ? { repositorySlug: side.repo.full_name } : {} }
+}
 const mapPull = (pull: z.infer<typeof GiteePullSchema>): ForgePull => ({
   nativeId: String(pull.id), displayNumber: String(pull.number), title: pull.title, body: pull.body ?? '',
   state: pull.state === 'merged' || pull.merged_at ? 'merged' : pull.state, author: actor(pull.user),
   createdAt: normalized(pull.created_at), updatedAt: normalized(pull.updated_at),
   ...pull.merged_at ? { mergedAt: normalized(pull.merged_at) } : {}, ...pull.closed_at ? { closedAt: normalized(pull.closed_at) } : {},
-  webUrl: pull.html_url, head: { ref: pull.head.ref, sha: pull.head.sha ?? '' }, base: { ref: pull.base.ref },
+  webUrl: pull.html_url, head: branchOf(pull.head), base: branchOf(pull.base),
 })
 
 /** Resolves the token a binding's credential reference names, without ever returning the variable value elsewhere. */
@@ -136,10 +179,20 @@ function tokenOf(environment: ForgeSetupEnvironment, variable: string): string {
 export const giteeForgeAdapter: ForgeAdapter = {
   provider: 'gitee',
   capabilities: GITEE_CAPABILITIES,
+  gitHost: 'gitee.com',
   presentation: {
     issueUrl: (repository, number) => `${repository.webUrl}/issues/${encodeURIComponent(number)}`,
     pullUrl: (repository, number) => `${repository.webUrl}/pulls/${encodeURIComponent(number)}`,
     accountUrl: login => `https://gitee.com/${login}`,
+  },
+  /** Gitee Issue and PR numbers are separate streams, but a PR's immutable ID keeps its Thread independent of both. */
+  pullThreadId: pull => `pull:${pull.nativeId}`,
+  readContext({ binding, deployment, env }) {
+    const credential = deployment.giteeCredentials[binding.credentialId]
+    if (!credential) throw new Error(`Repository ${binding.id} has no resolved Gitee credential ${binding.credentialId}`)
+    const token = env[credential.tokenEnv]
+    if (!token) throw new Error(`The Gitee credential ${credential.tokenEnv} is not set in the dsh-superagent process`)
+    return { token }
   },
   async resolveRepository(input: ForgeResolveInput, environment: ForgeSetupEnvironment): Promise<ForgeResolution | undefined> {
     const config = GiteeAccountsSchema.parse(input.config ?? {})
@@ -160,10 +213,11 @@ export const giteeForgeAdapter: ForgeAdapter = {
     return {
       repository: { providerRepositoryId: String(repository.id), slug: repository.full_name, webUrl: pageUrl(repository.html_url),
         defaultBranch: repository.default_branch ?? '' },
-      identity: { providerUserId: String(user.id ?? user.login), login: user.login, ...user.name ? { name: user.name } : {} },
+      identity: { providerUserId: String(user.id ?? user.login), login: user.login, ...user.name ? { name: user.name } : {},
+        ...user.email ? { email: user.email } : {} },
       push,
       capabilities: { ...GITEE_CAPABILITIES, repository: push ? 'read-write' : 'read' },
-      credential: { reference: config.tokenEnv },
+      credential: { reference: config.tokenEnv, commitEmail: user.email ?? `${user.login}@noreply.gitee.com` },
     }
   },
   async listIssues(binding: RepositoryBinding, query: ForgeReadQuery, context: ForgeReadContext): Promise<ForgePage<ForgeIssue>> {
@@ -176,7 +230,7 @@ export const giteeForgeAdapter: ForgeAdapter = {
   async readIssue(binding: RepositoryBinding, displayNumber: string, context: ForgeReadContext): Promise<ForgeIssue> {
     return mapIssue((await request(`/repos/${binding.slug}/issues/${encodeURIComponent(displayNumber)}`, GiteeIssueSchema, context)).value)
   },
-  async listComments(binding: RepositoryBinding, issue: ForgeIssue, query: ForgeReadQuery, context: ForgeReadContext):
+  async listComments(binding: RepositoryBinding, issue: Pick<ForgeIssue, 'displayNumber'>, query: ForgeReadQuery, context: ForgeReadContext):
     Promise<ForgePage<ForgeComment>> {
     // Gitee's comment endpoint applies `since` strictly after the timestamp, which drops a comment updated at exactly that
     // time; read the page and apply the cursor's inclusive comparison here instead.
@@ -185,6 +239,11 @@ export const giteeForgeAdapter: ForgeAdapter = {
     const items = value.map(mapComment).filter(comment => Date.parse(comment.updatedAt) >= since(query))
     const next = nextPage(headers, pageOf(query.cursor), value.length, Math.min(query.limit ?? PAGE_SIZE, PAGE_SIZE))
     return { items, ...next ? { next } : {} }
+  },
+  async createComment(binding: RepositoryBinding, issue: Pick<ForgeIssue, 'displayNumber'>, body: string, context: ForgeReadContext):
+    Promise<ForgeComment> {
+    return mapComment(await submit(`/repos/${binding.slug}/issues/${encodeURIComponent(issue.displayNumber)}/comments`, GiteeCommentSchema,
+      { body }, context))
   },
   async listPulls(binding: RepositoryBinding, query: ForgeReadQuery, context: ForgeReadContext): Promise<ForgePage<ForgePull>> {
     const { value, headers } = await request(`/repos/${binding.slug}/pulls?state=all&sort=updated&direction=asc&${listQuery(query)}`,
@@ -195,5 +254,21 @@ export const giteeForgeAdapter: ForgeAdapter = {
   },
   async readPull(binding: RepositoryBinding, displayNumber: string, context: ForgeReadContext): Promise<ForgePull> {
     return mapPull((await request(`/repos/${binding.slug}/pulls/${encodeURIComponent(displayNumber)}`, GiteePullSchema, context)).value)
+  },
+  async createPull(binding: RepositoryBinding, input: ForgePullInput, context: ForgeReadContext): Promise<ForgePull> {
+    // `submit` follows a create answer whose `head`/`base` is only the branch name, while a list or detail answer reports
+    // the branch objects; the mapping keeps both shapes' identity facts.
+    return mapPull(await submit(`/repos/${binding.slug}/pulls`, GiteePullSchema,
+      { title: input.title, body: input.body, head: input.head, base: input.base }, context))
+  },
+  async listPullComments(binding: RepositoryBinding, pull: ForgePull, query: ForgeReadQuery, context: ForgeReadContext):
+    Promise<ForgePage<ForgeComment>> {
+    // Gitee's pull-request comment endpoint returns both its conversation (`pr_comment`) and diff (`diff_comment`) entries
+    // when `comment_type` is omitted; the Issue comment endpoint takes Issue numbers and is not used for a PR.
+    const { value, headers } = await request(`/repos/${binding.slug}/pulls/${encodeURIComponent(pull.displayNumber)}/comments?${pageQuery(query)}`,
+      z.array(GiteeCommentSchema), context)
+    const items = value.map(mapComment).filter(comment => Date.parse(comment.updatedAt) >= since(query))
+    const next = nextPage(headers, pageOf(query.cursor), value.length, Math.min(query.limit ?? PAGE_SIZE, PAGE_SIZE))
+    return { items, ...next ? { next } : {} }
   },
 }

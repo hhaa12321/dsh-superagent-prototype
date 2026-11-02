@@ -20,6 +20,8 @@ export const RepositoryBindingSchema = z.object({
   slug: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, 'owner/name'),
   /** Canonical provider page. */
   webUrl: z.string().url(),
+  /** The provider's default branch at resolution time, used as a pull request base when the caller names none. */
+  defaultBranch: z.string().min(1).optional(),
   /** Reference to a protected credential source; the secret itself is never part of domain state. */
   credentialId: z.string().min(1),
   /** The operations this binding's adapter reported at resolution; persisted facts, never a secret. */

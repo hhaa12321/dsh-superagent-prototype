@@ -51,11 +51,13 @@ export const KV = {
     branchCi: family<{ branch?: string; failures?: string[]; revision: number }, [source: string, repository: string]>('github-branch-ci:'),
     ci: family<{ fingerprint: string; revision: number }, [source: string, repository: string, number: number]>('github-ci:') },
   /**
-   * Gitee Source, keyed by Source instance and repository binding: the Issue, comment and pull-request stream cursors and
-   * the per-Issue comment cursor. Native IDs are strings because Gitee distinguishes an Issue's numeric ID from its display number.
+   * Gitee Source, keyed by Source instance and repository binding: the Issue, comment and pull-request stream cursors, the
+   * per-Issue comment cursor, and the per-followed-PR comment cursor. Native IDs are strings because Gitee distinguishes
+   * an Issue's numeric ID from its display number.
    */
   gitee: { stream: family<{ since: string }, [source: string, repository: string, stream: string]>('gitee-stream:'),
-    issue: family<{ since: string }, [source: string, repository: string, thread: string]>('gitee-issue:') },
+    issue: family<{ since: string }, [source: string, repository: string, thread: string]>('gitee-issue:'),
+    pull: family<{ since: string }, [source: string, repository: string, thread: string]>('gitee-pull:') },
   /**
    * Feishu Source: known chats (`true` for direct messages); per-chat history cursor and active topics mapped from topic ID
    * to last-seen timestamp; and per-polled-thread seen message IDs and initialization flag.
