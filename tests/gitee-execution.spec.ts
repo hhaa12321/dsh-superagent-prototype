@@ -8,7 +8,7 @@ import { Engine, key, type Assessor, type Candidate } from '../src/core/index.ts
 import { SettingsSchema, settingsPolicy, type Settings } from '../src/policy.ts'
 import { Store } from '../src/app/store.ts'
 import { sourceContextOf, type SourceContextDeps } from '../src/app/source-context.ts'
-import { SourceRegistry } from '../src/sources/registry.ts'
+import { SourceRegistry, healthKey } from '../src/sources/registry.ts'
 import { HealthBoard } from '../src/infra/health.ts'
 import { giteeIssueTrigger, giteeKind, pollWhenEnabled } from '../src/sources/gitee.ts'
 import { sendGitee } from '../src/sources/gitee-channel.ts'
@@ -80,6 +80,8 @@ function fakeGitee() {
     }
     const commentPath = /\/issues\/([^/]+)\/comments$/.exec(address)
     if (commentPath) {
+      // Gitee's Issue comment endpoint takes Issue numbers, not a PR's display number; a PR conversation is read below.
+      if (/^\d+$/.test(commentPath[1]!)) return json({ message: 'Not Found' }, 404)
       const comments = state.issueComments[slug] ??= []
       if (method === 'GET') return json(comments, 200, { total_page: '1' })
       const form = new URLSearchParams(String(init?.body ?? ''))
@@ -215,17 +217,25 @@ describe('Gitee execution', () => {
     const retried = await run(restored, 'orchestrator_comment', { text: 'PR #700 is ready for review.', key: 'result' })
     expect(retried).toMatchObject({ reused: true, comment_id: String(before) })
     expect(gitee.state.issueComments[A.slug]).toHaveLength(1)
-    // A comment on the claimed PR reaches the Ticket's Thread once; a repeated poll does not duplicate it.
+    // A followed PR's conversation and diff comments come from `/pulls/{display}/comments`, never the Issue stream.
     const pull = gitee.state.pulls[A.slug]![0]!
-    pull.comments.push({ id: 9100, body: 'Please adjust the margin.', user: { id: 7, login: 'alice' }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    pull.comments.push({ id: 9100, body: 'Please adjust the margin.', user: { id: 7, login: 'alice' },
+      comment_type: 'diff_comment', created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
       html_url: `${A.webUrl}/pulls/700#note_9100` })
-    gitee.state.issueComments[A.slug]!.push({ id: 9101, body: 'The conversation comment too.', user: { id: 7, login: 'alice' },
-      created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    pull.comments.push({ id: 9101, body: 'The conversation comment too.', user: { id: 7, login: 'alice' },
+      comment_type: 'pr_comment', created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
       html_url: `${A.webUrl}/pulls/700#note_9101` })
+    pull.comments.push({ id: 9102, body: 'A self comment.', user: { id: 618074, login: 'bourneW' }, comment_type: 'pr_comment',
+      created_at: new Date().toISOString(), updated_at: new Date().toISOString(), html_url: `${A.webUrl}/pulls/700#note_9102` })
+    gitee.calls.length = 0
     await pollWhenEnabled(h.ctx('gitee-a'))
+    expect(gitee.calls.some(call => call.method === 'GET' && call.url.pathname.endsWith('/pulls/700/comments'))).toBe(true)
+    expect(gitee.calls.some(call => call.url.pathname.endsWith('/issues/700/comments'))).toBe(false)
     const triggers = h.store.read.threadTriggers('gitee-a:pull:100700', 100)
     expect(triggers.filter(trigger => trigger.meta.kind === 'pull-comment').map(trigger => trigger.meta.commentId))
       .toEqual(expect.arrayContaining(['9100', '9101']))
+    expect(triggers.some(trigger => trigger.meta.commentId === '9102')).toBe(false)
+    expect(h.store.threads.get('gitee-a:pull:100700')?.meta.pollError).toBeUndefined()
     const count = triggers.length
     await pollWhenEnabled(h.ctx('gitee-a'))
     expect(h.store.read.threadTriggers('gitee-a:pull:100700', 100)).toHaveLength(count)
@@ -247,6 +257,35 @@ describe('Gitee execution', () => {
   })
 
 
+  it('polls a followed PR only through the pull-request comment endpoint and ingests both comment types once', async () => {
+    h = harness()
+    gitee = fakeGitee()
+    vi.stubGlobal('fetch', gitee.fetch)
+    const ticket = accept(h, A)
+    await run(ticket, 'orchestrator_pull_request', { operation: 'create', title: 'Comment route', body: '', head: 'agent/fix-e2e', base: 'master' })
+    const now = new Date().toISOString()
+    const pull = gitee.state.pulls[A.slug]![0]!
+    pull.comments.push({ id: 9201, body: 'PR conversation.', user: { id: 7, login: 'alice' }, comment_type: 'pr_comment',
+      created_at: now, updated_at: now, html_url: `${A.webUrl}/pulls/700#note_9201` })
+    pull.comments.push({ id: 9202, body: 'Diff line.', user: { id: 7, login: 'alice' }, comment_type: 'diff_comment',
+      created_at: now, updated_at: now, html_url: `${A.webUrl}/pulls/700#note_9202` })
+    pull.comments.push({ id: 9203, body: 'Agent self comment.', user: { id: 618074, login: 'bourneW' }, comment_type: 'pr_comment',
+      created_at: now, updated_at: now, html_url: `${A.webUrl}/pulls/700#note_9203` })
+    h.store.threads.patchMeta('gitee-a:pull:100700', { pollError: 'Gitee API 404: 404 Not Found' })
+    gitee.calls.length = 0
+    await pollWhenEnabled(h.ctx('gitee-a'))
+    const paths = gitee.calls.map(call => call.url.pathname)
+    expect(paths.filter(path => path.endsWith('/pulls/700/comments'))).toHaveLength(1)
+    expect(paths.some(path => path.endsWith('/issues/700/comments'))).toBe(false)
+    const triggers = h.store.read.threadTriggers('gitee-a:pull:100700', 100).filter(trigger => trigger.meta.kind === 'pull-comment')
+    expect(triggers.map(trigger => trigger.meta.commentId)).toEqual(['9201', '9202'])
+    expect(h.store.threads.get('gitee-a:pull:100700')?.meta.pollError).toBeUndefined()
+    expect(h.board.all[healthKey('gitee-a', 'gitee')]).toMatchObject({ state: 'ready' })
+    gitee.calls.length = 0
+    await pollWhenEnabled(h.ctx('gitee-a'))
+    expect(h.store.read.threadTriggers('gitee-a:pull:100700', 100).filter(trigger => trigger.meta.kind === 'pull-comment')).toHaveLength(2)
+    expect(gitee.calls.map(call => call.url.pathname).some(path => path.endsWith('/issues/700/comments'))).toBe(false)
+  })
 
   it('posts an acknowledgement once through the Gitee Channel with its retry marker', async () => {
     h = harness()

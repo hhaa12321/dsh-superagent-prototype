@@ -274,13 +274,12 @@ async function pollTicketPulls(ctx: SourceContext, binding: RepositoryBinding, l
         }
         const cursorKey = KV.gitee.pull(ctx.sourceId, binding.id, follow.thread.slice(follow.thread.indexOf(':') + 1))
         const since = ctx.state.get(cursorKey)?.since ?? thread?.createdAt ?? started
-        // A Gitee pull request keeps its conversation in the Issue comment stream and its code comments in the PR comment
-        // stream; read both, and deduplicate an item that both endpoints report by its native comment ID.
-        const conversation = await pages(next => giteeForgeAdapter.listComments(binding, { displayNumber: pull.displayNumber },
-          { since, cursor: next }, context))
-        const review = await pages(next => giteeForgeAdapter.listPullComments(binding, pull, { since, cursor: next }, context))
+        // Gitee exposes a PR's conversation and diff comments only through its pull-request comment endpoint; the Issue
+        // comment endpoint takes Issue numbers and answers 404 for a PR display number. Read that stream and deduplicate
+        // by the native comment ID, which also covers a page overlap.
+        const listed = await pages(next => giteeForgeAdapter.listPullComments(binding, pull, { since, cursor: next }, context))
         const comments = new Map<string, ForgeComment>()
-        for (const comment of [...conversation, ...review]) comments.set(comment.nativeId, comment)
+        for (const comment of listed) comments.set(comment.nativeId, comment)
         for (const comment of comments.values()) {
           if (stopped()) throw new Error('The Gitee Source stopped during the poll')
           if (Date.parse(comment.updatedAt) < Date.parse(since) || sameName(comment.author.login, login)) continue

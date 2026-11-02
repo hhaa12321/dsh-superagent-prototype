@@ -263,8 +263,8 @@ export const giteeForgeAdapter: ForgeAdapter = {
   },
   async listPullComments(binding: RepositoryBinding, pull: ForgePull, query: ForgeReadQuery, context: ForgeReadContext):
     Promise<ForgePage<ForgeComment>> {
-    // Gitee keeps a PR's code comments apart from its conversation; this reads the PR comment stream, and the Source also
-    // reads its Issue conversation through `listComments` with the PR's display number.
+    // Gitee's pull-request comment endpoint returns both its conversation (`pr_comment`) and diff (`diff_comment`) entries
+    // when `comment_type` is omitted; the Issue comment endpoint takes Issue numbers and is not used for a PR.
     const { value, headers } = await request(`/repos/${binding.slug}/pulls/${encodeURIComponent(pull.displayNumber)}/comments?${pageQuery(query)}`,
       z.array(GiteeCommentSchema), context)
     const items = value.map(mapComment).filter(comment => Date.parse(comment.updatedAt) >= since(query))
