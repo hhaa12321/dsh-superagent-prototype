@@ -16,8 +16,8 @@ export const RepositoryBindingSchema = z.object({
   provider: ProviderSchema,
   /** The provider's immutable repository ID, as returned by the forge. */
   providerRepositoryId: z.string().min(1),
-  /** Mutable human-readable `owner/name`, used for display and resolution, never as identity. */
-  slug: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, 'owner/name'),
+  /** Mutable human-readable `owner/name` (or a nested GitLab group path), used for display and resolution, never as identity. */
+  slug: z.string().regex(/^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/, 'owner/name or group/subgroup/project'),
   /** Canonical provider page. */
   webUrl: z.string().url(),
   /** The provider's default branch at resolution time, used as a pull request base when the caller names none. */

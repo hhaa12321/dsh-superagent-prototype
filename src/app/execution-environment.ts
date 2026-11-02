@@ -28,8 +28,9 @@ export function bindingAccount(deployment: Deployment, binding: { provider: stri
   { login: string; commitEmail: string } | undefined {
   const github = deployment.credentials[binding.credentialId]
   if (github) return { login: github.login, commitEmail: github.noreply }
-  const gitee = deployment.giteeCredentials[binding.credentialId]
-  return gitee ? { login: gitee.login, commitEmail: gitee.commitEmail ?? `${gitee.login}@noreply.gitee.com` } : undefined
+  const token = deployment.tokenCredentials[binding.credentialId]
+  if (!token) return undefined
+  return { login: token.login, commitEmail: token.commitEmail ?? `${token.login}@noreply.${binding.provider}.com` }
 }
 
 /** Lists all declared variables grouped by owner; `enabled` is false for Sources that are currently switched off. */

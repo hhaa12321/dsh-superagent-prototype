@@ -140,7 +140,7 @@ export { giteeKind as kind }
 
 /** The credential of this instance's binding, and the token the host process holds for it; neither is persisted here. */
 function credentialOf(ctx: SourceContext, binding: RepositoryBinding): { credential: { login: string; tokenEnv: string }; token: string } {
-  const credential = ctx.deployment.giteeCredentials[binding.credentialId]
+  const credential = ctx.deployment.tokenCredentials[binding.credentialId]
   if (!credential) throw new Error(`Repository ${binding.id} has no resolved Gitee credential ${binding.credentialId}`)
   const token = process.env[credential.tokenEnv]
   if (!token) throw new Error(`The Gitee credential ${credential.tokenEnv} is not set in the dsh-superagent process`)

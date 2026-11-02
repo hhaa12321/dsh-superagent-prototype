@@ -24,7 +24,7 @@ export const testDeployment = (overrides: Partial<Deployment> = {}): Deployment 
   const github = 'github' in overrides ? overrides.github : testGithub
   return {
     ...testMachine(), ...github ? { github } : {}, credentials: overrides.credentials ?? (github ? { 'github:github': github } : {}),
-    giteeCredentials: overrides.giteeCredentials ?? {},
+    tokenCredentials: overrides.tokenCredentials ?? {},
     repositories: overrides.repositories ?? [testRepository],
     feishu: { cli: '/bin/false', botId: 'ou_bot', appId: 'cli_bot', brand: 'feishu', name: 'Widgets Bot' },
     ...overrides,

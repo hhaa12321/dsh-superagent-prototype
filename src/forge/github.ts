@@ -54,6 +54,7 @@ export const githubForgeAdapter: ForgeAdapter = {
   provider: 'github',
   capabilities: GITHUB_CAPABILITIES,
   gitHost: 'github.com',
+  credentialKind: 'cli',
   // Existing GitHub workspaces, cursors, and pull-request Threads use the display number, which GitHub keeps immutable
   // across Issues and pull requests.
   pullThreadId: pull => pull.displayNumber,
@@ -123,7 +124,13 @@ export const githubForgeAdapter: ForgeAdapter = {
     return mapPull(await commands.api(GithubPullSchema, 'pulls', '--method', 'POST', '-f', `title=${input.title}`, '-f',
       `head=${input.head}`, '-f', `base=${input.base}`, '-f', `body=${input.body}`))
   },
-  async listPullComments(binding: RepositoryBinding, pull: ForgePull, query: ForgeReadQuery, context: ForgeReadContext):
+  async createPullComment(binding: RepositoryBinding, pull: Pick<ForgePull, 'displayNumber'>, body: string, context: ForgeReadContext):
+    Promise<ForgeComment> {
+    const commands = required(context.commands, 'GitHub')
+    return mapComment(await commands.api(GithubCommentSchema, `issues/${encodeURIComponent(pull.displayNumber)}/comments`,
+      '--method', 'POST', '-f', `body=${body}`))
+  },
+  async listPullComments(binding: RepositoryBinding, pull: Pick<ForgePull, 'displayNumber'>, query: ForgeReadQuery, context: ForgeReadContext):
     Promise<ForgePage<ForgeComment>> {
     const commands = required(context.commands, 'GitHub')
     const items = await commands.pages(GithubCommentSchema, `issues/${encodeURIComponent(pull.displayNumber)}/comments?per_page=${limit(query)}${sinceQuery(query.since)}`)

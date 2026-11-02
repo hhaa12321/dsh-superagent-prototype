@@ -68,6 +68,7 @@ function fakeForge(): ForgeAdapter {
   }
   return {
     provider: 'fake',
+    credentialKind: 'token',
     capabilities: { repository: 'read-write', identity: true, issues: { read: true, comment: true },
       pulls: { read: true, create: false, comment: false, reviews: false }, ci: false, execution: true },
     gitHost: 'forge.test',
@@ -92,6 +93,7 @@ function fakeForge(): ForgeAdapter {
       return { ...pulls[0]!, nativeId: '2004', displayNumber: '4', title: input.title, body: input.body, head: { ref: input.head, sha: 'abc' },
         base: { ref: input.base }, webUrl: `${repository.webUrl}/pulls/4` }
     },
+    async createPullComment() { return comments[0]! },
     async listPullComments() { return { items: comments } },
   }
 }
@@ -247,7 +249,7 @@ describe('forge adapter contract', () => {
     const fetch = vi.fn(async () => new Response(JSON.stringify({ message: `bad token ${token}` }), { status: 401 }))
     await expect(giteeForgeAdapter.resolveRepository({ sourceId: 'gitee', config: { repository: giteeBinding.slug, tokenEnv: 'GITEE_TOKEN' } },
       { probe: async () => '', executable: () => '', env: { GITEE_TOKEN: token }, signal: new AbortController().signal }))
-      .rejects.toMatchObject({ code: 'giteeTokenRejected', values: { output: expect.not.stringContaining(token) } })
+      .rejects.toMatchObject({ code: 'tokenCredentialRejected', values: { output: expect.not.stringContaining(token) } })
     await expect(giteeForgeAdapter.listIssues(giteeBinding, {}, { token, fetch }))
       .rejects.toEqual(expect.objectContaining({ message: expect.not.stringContaining(token) }))
     await expect(giteeForgeAdapter.listIssues(giteeBinding, {}, { token, fetch: vi.fn(async () => new Response('{', { status: 200 })) }))
@@ -260,7 +262,7 @@ describe('Gitee setup validation', () => {
     env, signal: new AbortController().signal })
   it('requires the credential reference to name a set environment variable, never a literal token', async () => {
     await expect(giteeForgeAdapter.resolveRepository({ sourceId: 'gitee', config: { repository: giteeBinding.slug, tokenEnv: 'MISSING_TOKEN' } },
-      environment({}))).rejects.toMatchObject({ code: 'giteeTokenUnset', values: { variable: 'MISSING_TOKEN' } })
+      environment({}))).rejects.toMatchObject({ code: 'tokenCredentialUnset', values: { variable: 'MISSING_TOKEN' } })
   })
   it('refuses a repository whose push permission the account lacks', async () => {
     const repo = { ...recorded<Record<string, unknown>>('repo.json'), permission: { pull: true, push: false, admin: false } }
@@ -268,6 +270,6 @@ describe('Gitee setup validation', () => {
       ? new Response(JSON.stringify(recorded('user.json')), { status: 200 })
       : new Response(JSON.stringify(repo), { status: 200 }))
     await expect(giteeForgeAdapter.resolveRepository({ sourceId: 'gitee', config: { repository: giteeBinding.slug, tokenEnv: 'GITEE_TOKEN' } },
-      { ...environment({ GITEE_TOKEN: token }), fetch })).rejects.toMatchObject({ code: 'giteeRepositoryReadOnly', values: { repository: giteeBinding.slug } })
+      { ...environment({ GITEE_TOKEN: token }), fetch })).rejects.toMatchObject({ code: 'tokenRepositoryReadOnly', values: { repository: giteeBinding.slug } })
   })
 })

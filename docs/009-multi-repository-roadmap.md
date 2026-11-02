@@ -1,6 +1,6 @@
 # 009 Multi-repository and multi-forge roadmap
 
-This document defines the long-term repository identity model and the delivery path from the upstream prototype's single GitHub repository to multiple repositories across multiple forges. Gitee is the first additional forge.
+This document defines the long-term repository identity model and the delivery path from the upstream prototype's single GitHub repository to multiple repositories across multiple forges. Gitee is the first additional forge and GitLab the second; the protected token-credential boundary is shared by both.
 
 This is a clean-break design. The current prototype stores one global GitHub repository, so the new model starts with a fresh state directory. It does not migrate old settings, domain records, cursors, or credentials, and it keeps no fallback path for the old global configuration.
 
@@ -288,6 +288,18 @@ Gate:
 Add a second provider adapter without changing Engine, Ticket, workspace, scheduler, or tool-routing contracts. The acceptance test is two different providers running concurrently in one control plane and proving that provider-specific IDs, credentials, links, and PR behavior remain isolated.
 
 Do not introduce a plugin marketplace or dynamic third-party adapter loader before this second implementation identifies the repeated boundary. Registry registration of built-in adapters is sufficient until then.
+
+### Phase 5 implementation notes
+
+GitLab is the second built-in additional forge, registered beside Gitee without changing the Engine, Ticket, workspace, scheduler, or tool-routing contracts:
+
+- `src/forge/gitlab.ts` uses the official GitLab REST API v4 at `https://gitlab.com/api/v4` with `PRIVATE-TOKEN`. Repository resolution reads `/projects/:id` with the URL-encoded project path (nested group paths included), verifies the authenticated user's `permissions.project_access.access_level` or `permissions.group_access.access_level` is at least Developer (30), and persists the numeric project ID as `providerRepositoryId`. Normal operations use that numeric ID.
+- Issues use `/projects/:id/issues` and `/projects/:id/issues/:issue_iid`; their global numeric `id` is the native Thread identity and their project-scoped `iid` is the display number. Merge requests use `/projects/:id/merge_requests` and `/projects/:id/merge_requests/:merge_request_iid`; the global MR `id` is stored as the followed Thread's native identity (`pull:<id>`) and the `iid` is display metadata. Notes use the Issue and merge-request notes endpoints. List reads page by `X-Next-Page` and filter by the documented `updated_after`; notes carry no timestamp filter, so the adapter pages them and applies the persisted cursor itself.
+- The adapter drops every `system: true` note, so system activity never becomes a Trigger. Trigger IDs derive from the Source instance, repository binding, and native IDs; persisted cursors and native-ID deduplication therefore survive restarts. The Source records the account's own events as non-human facts and refuses them at the gate, as the Gitee Source does.
+- Claimed merge requests are observed per binding: merge, close, or locked ends only the Ticket that follows that merge request; a missing or failed read stays on its Thread and fails only that Source's poll.
+- The built-in Source kind, its Channel, health owner, panel fields, bundle registration, and the `dsh-superagent-gitlab` worker skill are registry entries, not a plugin loader.
+- `src/forge/token-credential.ts` replaces the Gitee-specific credential record and broker with one provider-neutral protected token boundary for Gitee and GitLab. A helper names its binding, provider, host, and repository; the broker answers only for an enabled binding with exactly that tuple and reads the token from the host process at request time. Gitee's HTTPS behavior is unchanged; GitLab uses its documented HTTPS personal-access-token authentication. Git configuration and helper paths contain no secret, and no token enters arguments, URLs, generated files, the database, prompts, logs, worker environment, or worker output.
+- `tests/gitlab-forge.spec.ts`, `tests/gitlab-source.spec.ts`, `tests/token-credential.spec.ts`, and the opt-in `tests/gitlab-live.spec.ts` cover the documented routes and headers, paging and cursors, system-note exclusion, native IDs versus IIDs, access checks, merge-request lifecycle, concurrent Gitee + GitLab collision isolation, a single-provider poll failure, and credential isolation. The live smoke needs `GITLAB_LIVE_TOKEN_FILE` and `GITLAB_LIVE_PROJECT` and is skipped without them; no live write evidence is claimed before a disposable project is provisioned.
 
 ## Test strategy
 

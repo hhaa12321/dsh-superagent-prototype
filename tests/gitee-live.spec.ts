@@ -75,7 +75,7 @@ describe.skipIf(!FILE)('live Gitee read smoke', () => {
       const sources = new SourceRegistry(() => store.settings(), board, undefined, sourceId => sourceId === 'gitee-live' ? binding : undefined)
       sources.register(giteeKind)
       const deployment = testDeployment({ github: undefined, credentials: {}, repositories: [binding],
-        giteeCredentials: { [binding.credentialId]: { tokenEnv: 'GITEE_TOKEN', login: 'bourneW', userId: '618074' } } })
+        tokenCredentials: { [binding.credentialId]: { tokenEnv: 'GITEE_TOKEN', login: 'bourneW', userId: '618074' } } })
       const engine = new Engine({ repo: store, scope: sources, policy: () => settingsPolicy(store.settings(), sources),
         assessor: { request: () => {} } satisfies Assessor, executor: { start: () => {}, deliver: () => {}, stop: () => {} },
         outbox: { send: () => {}, status: () => undefined, withdraw: () => {} }, threadRepository: ref => ref.repositoryId ?? null,
@@ -112,7 +112,7 @@ describe.skipIf(!FILE)('live Gitee read smoke', () => {
       async () => { throw new Error('no GitHub probe for a Gitee-only deployment') }, '/usr/bin:/bin', { GITEE_TOKEN: token })
     expect(deployment.github).toBeUndefined()
     expect(deployment.repositories[0]).toMatchObject({ id: 'gitee:51207621', provider: 'gitee', slug: SLUG })
-    expect(deployment.giteeCredentials['gitee:gitee-live']).toMatchObject({ login: 'bourneW', userId: '618074' })
+    expect(deployment.tokenCredentials['gitee:gitee-live']).toMatchObject({ login: 'bourneW', userId: '618074' })
     expect(JSON.stringify(deployment)).not.toContain(token)
   })
 })

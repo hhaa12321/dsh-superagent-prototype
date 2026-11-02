@@ -30,7 +30,7 @@ async function comments(host: Pick<SourceContext, 'commands'>, number: string, c
 export async function sendGitee(host: Pick<SourceContext, 'commands'>, message: OutboundMessage): Promise<'sent' | 'gone'> {
   const binding = host.commands.repository
   if (!binding) throw new Error(`Gitee Channel ${message.channel.thread} has no repository binding`)
-  const credential = host.commands.deployment.giteeCredentials[binding.credentialId]
+  const credential = host.commands.deployment.tokenCredentials[binding.credentialId]
   if (!credential) throw new Error(`Repository ${binding.id} has no resolved Gitee credential`)
   const token = process.env[credential.tokenEnv]
   if (!token) throw new Error(`The Gitee credential ${credential.tokenEnv} is not set in the dsh-superagent process`)

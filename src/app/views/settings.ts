@@ -32,7 +32,7 @@ export function settingsView(store: Store, sources: SourceRegistry, health: Heal
     const deployment = setup.deployment
     const account = !resolved || !deployment ? undefined
       : (resolved.provider === 'github' ? deployment.credentials[resolved.credentialId]?.login
-        : deployment.giteeCredentials[resolved.credentialId]?.login)
+        : deployment.tokenCredentials[resolved.credentialId]?.login)
     return { ...view, sourceId: owners.get(view.id) ?? '', ...account ? { account } : {} }
   }
   return {
