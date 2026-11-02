@@ -133,6 +133,13 @@ describe('GitLab forge adapter', () => {
     expect(stub.calls.at(-1)!).toMatchObject({ method: 'POST', contentType: 'application/json', body: JSON.stringify({ body: 'hello' }) })
     const pullComments = await gitlabForgeAdapter.listPullComments(binding, { displayNumber: '3' }, {}, context(stub))
     expect(pullComments.items.map(comment => comment.nativeId)).toEqual(['46'])
+    // The merge-request notes endpoint does not document activity_filter; the adapter filters system notes itself.
+    const mrNotes = stub.calls.at(-1)!.url
+    expect(mrNotes.pathname).toBe('/api/v4/projects/1234/merge_requests/3/notes')
+    expect(mrNotes.searchParams.get('sort')).toBe('asc')
+    expect(mrNotes.searchParams.get('order_by')).toBe('updated_at')
+    expect(mrNotes.searchParams.get('per_page')).toBe('100')
+    expect(mrNotes.searchParams.has('activity_filter')).toBe(false)
   })
 
   it('lists, reads, creates, and comments on merge requests with source/target project identity', async () => {

@@ -114,7 +114,9 @@ const listQuery = (query: ForgeReadQuery): string => {
 }
 /** Notes take no timestamp filter, so the adapter pages them and applies the cursor's inclusive comparison itself. */
 const noteQuery = (query: ForgeReadQuery): string =>
-  `page=${pageOf(query.cursor)}&per_page=${limitOf(query)}&sort=asc&order_by=updated_at&activity_filter=only_comments`
+  `page=${pageOf(query.cursor)}&per_page=${limitOf(query)}&sort=asc&order_by=updated_at`
+/** Only the Issue-notes list endpoint documents `activity_filter`; merge-request notes filter system notes client-side. */
+const issueNoteQuery = (query: ForgeReadQuery): string => `${noteQuery(query)}&activity_filter=only_comments`
 const since = (query: ForgeReadQuery): number => Date.parse(query.since ?? '') || Number.NEGATIVE_INFINITY
 /** The project path segment: the numeric ID for normal operations, URL-encoded for resolution by slug. */
 const project = (binding: Pick<RepositoryBinding, 'providerRepositoryId'>): string => encodeURIComponent(binding.providerRepositoryId)
@@ -212,7 +214,7 @@ export const gitlabForgeAdapter: ForgeAdapter = {
   },
   async listComments(binding: RepositoryBinding, issue: Pick<ForgeIssue, 'displayNumber'>, query: ForgeReadQuery, context: ForgeReadContext):
     Promise<ForgePage<ForgeComment>> {
-    const { value, headers } = await get(`/projects/${project(binding)}/issues/${encodeURIComponent(issue.displayNumber)}/notes?${noteQuery(query)}`,
+    const { value, headers } = await get(`/projects/${project(binding)}/issues/${encodeURIComponent(issue.displayNumber)}/notes?${issueNoteQuery(query)}`,
       z.array(GitlabNoteSchema), context)
     // GitLab marks system activity as `system: true`; only human notes are messages a Source may ingest.
     const items = value.filter(note => note.system !== true).map(mapComment).filter(comment => Date.parse(comment.updatedAt) >= since(query))
