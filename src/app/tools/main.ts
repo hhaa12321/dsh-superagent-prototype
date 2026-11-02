@@ -40,19 +40,24 @@ function routed(host: MainToolsHost, result: { decision?: DecisionKind; reason: 
     ...(ticket ? { ticket: ticketCard(ticket) } : {}) }
 }
 const fromDecision = (decision: Decision) => ({ decision: decision.kind, reason: reasonText(decision.reason), ticketId: decision.ticketId })
+/** The question `clarify` sends: one short sentence, within the IM limit its answer goes out under. */
+const ClarificationSchema = z.string().trim().min(1)
+  .refine(text => wordCount(text) <= IM_WORDS, `A clarification has at most ${IM_WORDS} words (Chinese uses word segmentation); ask one short question.`)
 /**
  * One routing decision of `orchestrator_route`. The schema holds only its shape: each kind's fields are checked as its item
  * runs (`FIELDS`), so an item that lacks one, or whose value breaks a limit, is refused alone.
  */
 const RouteItemSchema = z.object({
-  kind: z.enum(['accept', 'attach', 'ignore', 'stop']),
+  kind: z.enum(['accept', 'attach', 'clarify', 'ignore', 'stop'])
+    .describe('accept: new work. attach: an existing ticket. clarify: ask which binding an accept should use. ignore: no ticket or stop. stop: a person asked to stop.'),
   trigger_id: z.string().describe('The candidate card\'s trigger_id; deciding it decides its batch.'),
   ticket_id: z.string().nullish().describe('attach and stop: the ticket.'),
   title: z.string().nullish().describe('accept: a short label of at most 200 characters describing the original request; no added requirements or implementation advice.'),
   worktree_name: z.string().nullish().describe(`accept: ${WorktreeNameSchema.description ?? ''}`),
   acknowledgement: z.string().nullish().describe(`accept: one brief sentence of at most ${IM_WORDS} words naming the concrete change and intended result in the source language. It is posted as a reply to the original source on acceptance, so do not quote the source; quote an earlier proposal briefly only when the trigger merely confirms it and the sentence does not already state it. No generic I will handle it.`),
   note: z.string().nullish().describe(`accept and attach: ${RoutingNoteSchema.description ?? ''}`),
-  repository_id: z.string().nullish().describe('accept: the explicit RepositoryBinding ID for a request from a repository-less Source; omit to keep the Ticket repository-less.'),
+  repository_id: z.string().nullish().describe('accept: required when the Trigger has no repository binding: a configured binding ID, or none for intentionally repository-less work.'),
+  clarification: z.string().nullish().describe(`clarify: one question naming the relevant binding IDs and names, at most ${IM_WORDS} words, sent once in the thread.`),
   reason: z.string().nullish().describe('ignore and stop: why, at most 500 characters; an ignore needs it.'),
 }).strict()
 type RouteItem = z.infer<typeof RouteItemSchema>
@@ -65,8 +70,10 @@ const FIELDS: Record<Field, { check: z.ZodType; reads: readonly Kind[]; needs: r
   worktree_name: { check: WorktreeNameSchema, reads: ['accept'], needs: ['accept'] },
   acknowledgement: { check: AcknowledgementSchema, reads: ['accept'], needs: ['accept'] },
   note: { check: RoutingNoteSchema, reads: ['accept', 'attach'], needs: [] },
+  // Whether an accept needs it depends on the Trigger, which `route` checks before the Engine sees the item.
   repository_id: { check: z.string().min(1), reads: ['accept'], needs: [] },
-  reason: { check: z.string().max(500), reads: ['ignore', 'stop'], needs: ['ignore'] },
+  clarification: { check: ClarificationSchema, reads: ['clarify'], needs: ['clarify'] },
+  reason: { check: z.string().max(500), reads: ['ignore', 'clarify', 'stop'], needs: ['ignore'] },
 }
 /** Why an item cannot run: a field its kind needs is missing, or one it reads breaks its limit. */
 function invalid(item: RouteItem): string | undefined {
@@ -96,8 +103,16 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
   switch (item.kind) {
     case 'accept': {
       const before = host.store.triggers.disposition(item.trigger_id)?.decisionId
+      const trigger = host.store.triggers.get(item.trigger_id)
+      const requested = item.repository_id?.trim()
+      // A Trigger that names its repository keeps it. One without must say which to use, so no accept is repository-less by omission;
+      // `none` is the explicit choice of intentionally repository-less work, and every other id goes to the Engine unchanged.
+      if (trigger && trigger.repositoryId == null && !requested) {
+        return { refused: 'accept needs repository_id when the Trigger has no repository binding: pass a configured binding\'s id, or none for intentionally repository-less work' }
+      }
+      const selected = !requested || requested === 'none' ? {} : { repositoryId: requested }
       const decision = host.engine.decide(item.trigger_id, { kind: 'accept', title: item.title!, scope: item.title!, reason: { code: 'explicitRouted' },
-        acknowledgement: item.acknowledgement!, name: item.worktree_name!, ...note, ...item.repository_id ? { repositoryId: item.repository_id } : {} })
+        acknowledgement: item.acknowledgement!, name: item.worktree_name!, ...note, ...selected })
       // A Decision that created no ticket is the item's refusal; one that existed before keeps what it was accepted with.
       if (decision.kind !== 'accept' || !decision.ticketId) return { refused: `Ticket was not created: ${reasonText(decision.reason)}` }
       if (decision.id === before) {
@@ -108,6 +123,18 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
     case 'attach': {
       const ticket = host.quietly(() => host.engine.attach(item.ticket_id!, item.trigger_id, item.note ?? undefined))
       return { reason: 'Attached: the ticket follows the trigger\'s thread and receives the trigger', ticketId: ticket.id }
+    }
+    case 'clarify': {
+      // A Trigger that already names its repository has nothing to clarify: only a repository-less request can be asked which binding to use.
+      if (host.store.triggers.get(item.trigger_id)?.repositoryId != null) {
+        return { refused: 'clarify is only for a Trigger without a repository binding; accept it with its own repository' }
+      }
+      // Queue the question first, under the reply id its Trigger and text give it: repeating the item reuses it, and a Decision
+      // that then fails leaves the question queued for the retry rather than an ignored Trigger the person never heard about.
+      host.engine.reply({ purpose: 'answer', triggerId: item.trigger_id, text: item.clarification! })
+      const decision = host.engine.decide(item.trigger_id, { kind: 'ignore',
+        reason: item.reason || 'Request did not settle which repository binding to use; asked the person to choose one' })
+      return { ...fromDecision(decision), triggerIds: decision.triggerIds }
     }
     // Through `engine.decide`, so only a person's message the gate admits with explicit strength stops a ticket.
     case 'stop': {
@@ -127,7 +154,7 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
 function routeTool(host: MainToolsHost): Tool {
   return tool({
     name: 'orchestrator_route',
-    description: 'Route candidates, one item each by the card\'s trigger_id, in one call: accept an explicit request as a new ticket, attach a trigger to an existing ticket, stop a ticket on a person\'s stop message, or ignore a candidate that needs no ticket or stop, as dispatch says. Items run in order and each is answered on its own; a refused item leaves the others. An inferred candidate may be ignored here; accepting one goes through orchestrator_eval_decide.',
+    description: 'Route candidates, one item each by the card\'s trigger_id, in one call: accept an explicit request as a new ticket, attach a trigger to an existing ticket, stop a ticket on a person\'s stop message, clarify a repository choice, or ignore a candidate that needs no ticket or stop, as dispatch says. An accept from a Trigger without a repository binding must name repository_id, or be clarified. Items run in order and each is answered on its own; a refused item leaves the others. An inferred candidate may be ignored here; accepting one goes through orchestrator_eval_decide.',
     schema: z.object({ decisions: z.array(RouteItemSchema).min(1).max(20) }).strict(),
     execute: async ({ decisions }) => {
       const decided = new Map<string, string>()

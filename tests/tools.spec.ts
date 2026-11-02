@@ -148,7 +148,7 @@ it('routes several triggers in one call, in order, and answers a refused or fail
     { kind: 'ignore', trigger_id: thanks.id, reason: 'Thanks only.' },
     // A stop without its ticket is refused, alone.
     { kind: 'stop', trigger_id: request.id },
-    { kind: 'accept', trigger_id: request.id, title: 'Other', worktree_name: 'fix-other', acknowledgement: '收到。' },
+    { kind: 'accept', trigger_id: request.id, title: 'Other', worktree_name: 'fix-other', acknowledgement: '收到。', repository_id: 'none' },
     { kind: 'attach', trigger_id: other.id, ticket_id: 'no-such-ticket' },
     { kind: 'attach', trigger_id: more.id, ticket_id: ticket.id },
   ] }) as { results: Record<string, unknown>[] }
@@ -187,13 +187,75 @@ it('refuses alone an item that lacks a field its kind needs or breaks a field\'s
   expect(h.runtime.store.tickets.list()).toEqual([])
 })
 
+it('refuses an accept from a repository-less Trigger whose repository_id is omitted, null or empty, creating no Ticket', async () => {
+  const trigger = feishu('2', '@bot 修一下标题')
+  h.runtime.receive(trigger); await h.runtime.idle()
+  const accept = { kind: 'accept', trigger_id: trigger.id, title: 'Fix', worktree_name: 'fix-title', acknowledgement: '收到。' }
+  const { results } = await h.runTool(h.runtime.masterId, 'orchestrator_route', { decisions: [
+    { ...accept },
+    { ...accept, repository_id: null },
+    { ...accept, repository_id: '' },
+  ] }) as { results: Record<string, unknown>[] }
+  const refused = expect.stringMatching(/^accept needs repository_id when the Trigger has no repository binding/)
+  expect(results).toEqual([
+    { trigger_id: trigger.id, kind: 'accept', refused },
+    { trigger_id: trigger.id, kind: 'accept', refused },
+    { trigger_id: trigger.id, kind: 'accept', refused },
+  ])
+  expect(h.runtime.store.tickets.list()).toEqual([])
+  // Refused before the Engine ran: the Trigger keeps no Decision.
+  expect(h.runtime.store.triggers.disposition(trigger.id)?.decisionId).toBeUndefined()
+})
+
+it('accepts a repository-less Trigger as intentionally repository-less on the literal none, and stores an explicit binding ID it is given', async () => {
+  const none = feishu('2', '@bot 修一下标题'), bound = feishu('3', '@bot 修一下按钮')
+  h.runtime.receive(none); h.runtime.receive(bound); await h.runtime.idle()
+  const accept = (repository_id: string) => ({ kind: 'accept', title: 'Fix', worktree_name: 'fix-work', acknowledgement: '收到。', repository_id })
+  const first = await h.route({ ...accept('none'), trigger_id: none.id }) as { ticket: { ticket_id: string } }
+  expect(h.runtime.store.tickets.get(first.ticket.ticket_id)!.repositoryId).toBeNull()
+  // A configured binding ID reaches the Engine unchanged and is what the Ticket stores.
+  expect(h.runtime.store.repositories.get('github:101')).toBeDefined()
+  const second = await h.route({ ...accept('github:101'), trigger_id: bound.id }) as { ticket: { ticket_id: string } }
+  expect(h.runtime.store.tickets.get(second.ticket.ticket_id)!.repositoryId).toBe('github:101')
+})
+
+it('clarifies which repository binding to use once: no Ticket, an ignore decision and one answer in the same thread', async () => {
+  const trigger = feishu('2', '@bot stock-extractor 整体架构梳理一下')
+  h.runtime.receive(trigger); await h.runtime.idle()
+  const item = { kind: 'clarify', trigger_id: trigger.id, clarification: '请选择仓库：github:101（acme/widgets）还是 github:202（acme/beta）？' }
+  const replies = () => vi.mocked(Commands.prototype.lark).mock.calls.filter(([args]) => args[1] === '+messages-reply')
+  expect(await h.route(item)).toMatchObject({ decision: 'ignore', reason: 'Request did not settle which repository binding to use; asked the person to choose one' })
+  expect(h.runtime.store.tickets.list()).toEqual([])
+  expect(h.runtime.store.decisions.byThread(`feishu:${CHAT}:om_2`)).toEqual([expect.objectContaining({ kind: 'ignore',
+    reason: [expect.objectContaining({ code: 'said' })] })])
+  await h.runtime.idle()
+  expect(replies()).toHaveLength(1)
+  expect(replies()[0]![0]).toEqual(expect.arrayContaining(['--message-id', 'om_2', '--markdown', item.clarification, '--reply-in-thread']))
+  // The same clarification again reuses the queued answer: the person is asked once, not twice.
+  expect(await h.route(item)).toMatchObject({ decision: 'ignore' })
+  await h.runtime.idle()
+  expect(replies()).toHaveLength(1)
+})
+
+it('refuses a clarify for a Trigger that already names its repository binding', async () => {
+  const trigger = feishu('2', '@bot 修一下标题')
+  h.runtime.receive(trigger); await h.runtime.idle()
+  h.runtime.store.triggers.save({ ...trigger, repositoryId: 'github:101' })
+  const { results } = await h.runTool(h.runtime.masterId, 'orchestrator_route', { decisions: [
+    { kind: 'clarify', trigger_id: trigger.id, clarification: 'Which repository?' }] }) as { results: Record<string, unknown>[] }
+  expect(results).toEqual([{ trigger_id: trigger.id, kind: 'clarify',
+    refused: 'clarify is only for a Trigger without a repository binding; accept it with its own repository' }])
+  expect(h.runtime.store.tickets.list()).toEqual([])
+  expect(h.runtime.store.decisions.byThread(`feishu:${CHAT}:om_2`)).toEqual([])
+})
+
 it('decides a candidate\'s batch with its card\'s trigger: a second accept keeps the first, and no other decision contradicts it', async () => {
   await h.runtime.settings.pause(true, 'panel')
   const first = feishu('1', '@bot 首页的标题'), second = feishu('2', '@bot 改成“浏览网页”', { root_id: 'om_1' })
   h.runtime.receive(first); h.runtime.receive(second)
   await h.runtime.settings.pause(false, 'panel')
   await h.runtime.pump(); await h.runtime.idle()
-  const accept = { kind: 'accept', worktree_name: 'retitle', acknowledgement: '收到。' }
+  const accept = { kind: 'accept', worktree_name: 'retitle', acknowledgement: '收到。', repository_id: 'none' }
   const { results } = await h.runTool(h.runtime.masterId, 'orchestrator_route', { decisions: [
     { ...accept, trigger_id: first.id, title: 'Retitle' },
     { ...accept, trigger_id: second.id, title: 'Another title' },
@@ -237,7 +299,7 @@ it('ignores a proactive candidate from its card beside other decisions, marked s
   const { results } = await h.runTool(h.runtime.masterId, 'orchestrator_route', { decisions: [
     { kind: 'ignore', trigger_id: chat.id, reason: 'Lunch chat.' },
     { kind: 'ignore', trigger_id: thanks.id, reason: 'Thanks only.' },
-    { kind: 'accept', trigger_id: proposal.id, title: 'Shorter title', worktree_name: 'short-title', acknowledgement: '收到。' },
+    { kind: 'accept', trigger_id: proposal.id, title: 'Shorter title', worktree_name: 'short-title', acknowledgement: '收到。', repository_id: 'none' },
   ] }) as { results: Record<string, unknown>[] }
   expect(results).toEqual([
     { trigger_id: chat.id, kind: 'ignore', decision: 'ignore', reason: 'Ignored from its card, without a rule assessment; Lunch chat.' },
@@ -258,7 +320,8 @@ it('returns where a reply stands: sent, or dropped when its conversation can no 
 it('checks an acknowledgement against the IM word limit, not a character count', async () => {
   const trigger = feishu('1', '@bot 修一下回归')
   h.runtime.receive(trigger); await h.runtime.idle()
-  const accept = (acknowledgement: string) => h.route({ kind: 'accept', trigger_id: trigger.id, title: 'Fix', worktree_name: 'fix-regression', acknowledgement })
+  const accept = (acknowledgement: string) => h.route({ kind: 'accept', trigger_id: trigger.id, title: 'Fix', worktree_name: 'fix-regression',
+    acknowledgement, repository_id: 'none' })
   await expect(accept(words(IM_WORDS + 1))).rejects.toThrow(`at most ${IM_WORDS} words`)
   expect(await accept(words(IM_WORDS))).toMatchObject({ decision: 'accept', ticket: { title: 'Fix' } })
 })
@@ -381,7 +444,8 @@ it('shows a candidate with its thread\'s tickets open first, the tickets it reac
   const second = feishu('2', '@bot 另一个问题', { root_id: 'om_1' })
   h.runtime.receive(second); await h.runtime.idle()
   await handBack(second.id)
-  const b = (await h.route({ kind: 'accept', trigger_id: second.id, title: 'Other', worktree_name: 'fix-other', acknowledgement: '收到。' })).ticket as
+  const b = (await h.route({ kind: 'accept', trigger_id: second.id, title: 'Other', worktree_name: 'fix-other', acknowledgement: '收到。',
+    repository_id: 'none' })).ticket as
     { ticket_id: string }
   h.runtime.engine.stopTicket(b.ticket_id)
   // A follow-up reaches the live ticket without an Eval; handed back, its candidate shows where it went.
@@ -478,7 +542,8 @@ it('gives a worker the other messages of the request its ticket was accepted fro
   await h.runtime.receive(first); await h.runtime.receive(second)
   await h.runtime.settings.pause(false, 'panel')
   await h.runtime.pump(); await h.runtime.idle()
-  const accepted = await h.route({ kind: 'accept', trigger_id: second.id, title: 'Retitle', worktree_name: 'retitle', acknowledgement: '收到。' })
+  const accepted = await h.route({ kind: 'accept', trigger_id: second.id, title: 'Retitle', worktree_name: 'retitle', acknowledgement: '收到。',
+    repository_id: 'none' })
   await h.runtime.idle()
   const ticket = h.runtime.store.tickets.get((accepted.ticket as { ticket_id: string }).ticket_id)!
   const other = ticket.origin.triggerIds.find(id => id !== ticket.origin.triggerId)!
