@@ -1,7 +1,9 @@
 /** Shared base class and configuration for Engine domain parts. */
 import { UserError } from './errors.ts'
+import { DEFAULT_STEP_LIMITS } from './budget.ts'
+import type { StepLimits } from './budget.ts'
 import { followupOwners, reached, threadKey } from './model.ts'
-import type { Thread, ThreadRef, Ticket, Trigger } from './model.ts'
+import type { Deliverable, Thread, ThreadRef, Ticket, Trigger } from './model.ts'
 import type { Assessor, AssessmentOutcome, DomainEvent, DomainEvents, Executor, Outbox, Policy, Repositories, SourceScope } from './ports.ts'
 
 export interface EngineOptions {
@@ -12,6 +14,11 @@ export interface EngineOptions {
   assessor: Assessor
   executor: Executor
   outbox: Outbox
+  /**
+   * The step limits the Execution settings currently set for `deliverable`, snapshotted onto a Ticket when it starts a
+   * budget epoch. Absent keeps the built-in defaults.
+   */
+  stepLimits?: (deliverable: Deliverable) => StepLimits
   prepareTicket?: (ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>) => Ticket
   /** Whether a RepositoryBinding exists; acceptance refuses an explicit binding that does not. */
   repositoryExists?(repositoryId: string): boolean
@@ -35,6 +42,10 @@ export abstract class EnginePart {
   constructor(protected readonly options: EngineOptions) { this.repo = options.repo }
   protected now(): string { return this.options.now?.() ?? new Date().toISOString() }
   protected policy(): Policy { return this.options.policy() }
+  /** The step limits the Execution settings currently set for `deliverable`. */
+  protected stepLimits(deliverable: Deliverable): StepLimits {
+    return this.options.stepLimits?.(deliverable) ?? DEFAULT_STEP_LIMITS[deliverable]
+  }
   /** The tickets whose worker decides a person's follow-up: see `followupOwners`. */
   protected owners(trigger: Trigger): string[] { return followupOwners(trigger, this.repo) }
   /** Refuse a main-Session routing of a follow-up a ticket's worker still decides. */

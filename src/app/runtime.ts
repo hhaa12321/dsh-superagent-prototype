@@ -150,6 +150,8 @@ export class Runtime extends Service implements SourceHost {
       const policy = () => settingsPolicy(store.settings(), sources)
       const engine = this.engine = new Engine({ repo: store, scope: sources, policy, assessor, executor,
         outbox, prepareTicket: (ticket, outcome) => executor.prepare(ticket, outcome),
+        // A Ticket snapshots the step limits its epoch starts under, so a settings edit leaves running Tickets alone.
+        stepLimits: deliverable => store.settings().executor.stepBudgets[deliverable],
         // Acceptance binds a repository-less request to the one enabled binding, and records it on the ticket.
         // A Thread reference resolves its Source instance's binding before the Thread exists, so a worker cannot follow another repository's Thread.
         threadRepository: ref => sources.bindingOf(ref.source)?.id ?? ref.repositoryId ?? null,

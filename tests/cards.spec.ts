@@ -123,7 +123,7 @@ const ticket: Ticket = { id: 'ticket-1', title: 'Inspect failing check', decisio
   mandate: { strength: 'explicit', deliverable: 'change', policyVersion: 'v1', basis: { via: 'listed', sender: 'Alice' }, actor: trigger.actor, scope: 'small' },
   assignments: [{ id: 'a1', state: 'running', createdAt: '2026-09-09T00:00:00Z', startedAt: '2026-09-09T00:00:00Z', report: { state: 'ready', summary: SUMMARY, at: '' } }],
   createdAt: '2026-09-09T00:00:00Z', updatedAt: '2026-09-09T00:00:00Z',
-  budget: { used: 0, lastSeq: -1, epoch: 1, status: 'ok' }, origin: { triggerId: 'request-1', triggerIds: ['request-1'] },
+  budget: { used: 0, lastSeq: -1, epoch: 1, status: 'ok', soft: 120, hard: 180 }, origin: { triggerId: 'request-1', triggerIds: ['request-1'] },
   execution: { name: 'ticket-1', directory: '/worktrees/ticket-1', assignment: 'Inspect the check.' },
   follows: [{ thread: 'github:42', own: true }] }
 it('shows a trigger and a ticket as cards with a short preview and references to their bodies', () => {

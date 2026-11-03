@@ -75,13 +75,33 @@ function EnvironmentVariables({ groups, sources,
 export function ExecutionSettings() {
   const { t } = usePanel()
   const { blocks, environment, sources } = useSettings().settings
-  // Keep raw user text (such as separators between blocked commands) in the draft and parse only on save.
+  // Keep raw user text (such as separators between blocked commands, or a cleared number) in the draft and parse only on save.
   const executor = blocks.executor.value
-  const saved = { ...executor, maxWorkers: String(executor.maxWorkers), blockedCommands: executor.blockedCommands.join(' ') }
+  const limitsDraft = (limits: { soft: number; hard: number }) => ({ soft: String(limits.soft), hard: String(limits.hard) })
+  const saved = { ...executor, maxWorkers: String(executor.maxWorkers), blockedCommands: executor.blockedCommands.join(' '),
+    stepBudgets: { analysis: limitsDraft(executor.stepBudgets.analysis), change: limitsDraft(executor.stepBudgets.change) } }
   const draft = useBlockDraft('executor', saved, blocks.executor.revision,
-    value => ({ ...value, maxWorkers: numberOf(value.maxWorkers), blockedCommands: value.blockedCommands.split(/[\s,]+/).filter(Boolean) }))
+    value => ({ ...value, maxWorkers: numberOf(value.maxWorkers), blockedCommands: value.blockedCommands.split(/[\s,]+/).filter(Boolean),
+      stepBudgets: { analysis: { soft: numberOf(value.stepBudgets.analysis.soft), hard: numberOf(value.stepBudgets.analysis.hard) },
+        change: { soft: numberOf(value.stepBudgets.change.soft), hard: numberOf(value.stepBudgets.change.hard) } } }))
   const value = draft.value
   const edit = (next: Partial<typeof value>) => draft.edit({ ...value, ...next })
+  // The four thresholds are strings while edited, and become numbers once on save.
+  const editStepLimits = (deliverable: 'analysis' | 'change', next: { soft?: string; hard?: string }) =>
+    edit({ stepBudgets: { ...value.stepBudgets, [deliverable]: { ...value.stepBudgets[deliverable], ...next } } })
+  const stepLimits = (deliverable: 'analysis' | 'change') => {
+    const limits = value.stepBudgets[deliverable], name = t(`stepBudget.${deliverable}`)
+    return <>
+      <Field label={t('stepBudgetSoft', { deliverable: name })} hint={t('stepBudgetSoftHint')}>
+        <Input type="number" min={LIMITS.stepBudget.min} max={LIMITS.stepBudget.max} required value={limits.soft}
+          onChange={event => editStepLimits(deliverable, { soft: event.target.value })} />
+      </Field>
+      <Field label={t('stepBudgetHard', { deliverable: name })} hint={t('stepBudgetHardHint')}>
+        <Input type="number" min={LIMITS.stepBudget.min} max={LIMITS.stepBudget.max} required value={limits.hard}
+          onChange={event => editStepLimits(deliverable, { hard: event.target.value })} />
+      </Field>
+    </>
+  }
   const prepare = useRef<HTMLTextAreaElement>(null)
   const insert = (key: string) => {
     const field = prepare.current
@@ -100,6 +120,10 @@ export function ExecutionSettings() {
             <Input type="number" min={LIMITS.maxWorkers.min} max={LIMITS.maxWorkers.max} required value={value.maxWorkers}
               onChange={event => edit({ maxWorkers: event.target.value })} />
           </Field>
+          <Section title={t('stepBudgets')} hint={t('stepBudgetsHint')}>
+            <h3 className="dt-block-title">{t('stepBudget.analysis')}</h3>{stepLimits('analysis')}
+            <h3 className="dt-block-title">{t('stepBudget.change')}</h3>{stepLimits('change')}
+          </Section>
         </div>
         <div className="dt-form dt-block">
           <h2 className="dt-block-title">{t('term.environment')}<InfoTip text={t('environmentIntro')} /></h2>

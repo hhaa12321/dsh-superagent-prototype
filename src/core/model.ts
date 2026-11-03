@@ -287,8 +287,10 @@ export interface PolicyEffect {
 export type BudgetStatus = 'ok' | 'checkpoint' | 'blocked'
 /**
  * The durable step budget of a Ticket's worker: the steps counted so far, the Session sequence watermark that counts each
- * `step/start` once, the epoch an explicit retry increments, and the status. The epoch survives nothing but a retry that
- * starts a new one; every assignment the Executor starts, automatic restart and ordinary input delivery keep it.
+ * `step/start` once, the epoch an explicit retry increments, the status, and the limits this epoch was snapshotted with. The
+ * epoch survives nothing but a retry that starts a new one; every assignment the Executor starts, automatic restart and
+ * ordinary input delivery keep it. The limits are snapshotted from the Execution settings when the epoch starts, so editing
+ * the settings leaves running Tickets on their own limits.
  */
 export interface StepBudget {
   /** Worker steps counted in this epoch. */
@@ -298,6 +300,10 @@ export interface StepBudget {
   /** The explicit-retry epoch; only `retryTicket` starts a new one. */
   epoch: number
   status: BudgetStatus
+  /** The soft checkpoint this epoch was snapshotted with. */
+  soft: number
+  /** The hard stop this epoch was snapshotted with. */
+  hard: number
 }
 
 export type TicketEndBy = 'executor' | 'human'

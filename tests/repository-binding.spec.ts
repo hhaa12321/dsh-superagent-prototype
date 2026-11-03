@@ -133,7 +133,7 @@ describe('repository binding identity', () => {
     sources.register(githubKind)
     const ticket: Ticket = { id: 't-a', title: 'Fix', decisionId: 'd', repositoryId: A.id,
       mandate: { strength: 'explicit', deliverable: 'change', policyVersion: 'v', basis: { via: 'listed' }, actor: { source: refA.sourceId, id: 'alice' }, scope: '' },
-      channels: [], assignments: [], inputs: [], undelivered: [], createdAt: at, updatedAt: at, budget: { used: 0, lastSeq: -1, epoch: 1, status: 'ok' }, origin: { triggerId: 'x', triggerIds: [] },
+      channels: [], assignments: [], inputs: [], undelivered: [], createdAt: at, updatedAt: at, budget: { used: 0, lastSeq: -1, epoch: 1, status: 'ok', soft: 120, hard: 180 }, origin: { triggerId: 'x', triggerIds: [] },
       execution: { name: 'fix', directory: `/srv/state/work/${A.id}/fix`, assignment: '' } }
     const values = Object.fromEntries(environmentOf({ deployment, sources, settings: settings({
       sources: { [refA.sourceId]: { kind: 'github', enabled: true, config: { repository: A.slug, cli: '/bin/false' } },
@@ -200,7 +200,7 @@ describe('binding lifecycle and schema', () => {
       correlated: [], pending: [], meta: {} })
     store.tickets.save({ id: 't-a', title: 'Fix', decisionId: 'd', repositoryId: A.id,
       mandate: { strength: 'explicit', deliverable: 'change', policyVersion: 'v', basis: { via: 'listed' }, actor: { source: refA.sourceId, id: 'alice' }, scope: '' },
-      channels: [], assignments: [], inputs: [], undelivered: [], createdAt: at, updatedAt: at, budget: { used: 0, lastSeq: -1, epoch: 1, status: 'ok' }, origin: { triggerId: trigger.id, triggerIds: [trigger.id] } })
+      channels: [], assignments: [], inputs: [], undelivered: [], createdAt: at, updatedAt: at, budget: { used: 0, lastSeq: -1, epoch: 1, status: 'ok', soft: 120, hard: 180 }, origin: { triggerId: trigger.id, triggerIds: [trigger.id] } })
     expect(store.db.prepare('SELECT repository_id FROM trigger WHERE id=?').get(trigger.id)).toEqual({ repository_id: A.id })
     expect(store.db.prepare('SELECT repository_id FROM thread WHERE key=?').get(threadKey(trigger.threads[0]!))).toEqual({ repository_id: A.id })
     expect(store.db.prepare('SELECT repository_id FROM ticket WHERE id=?').get('t-a')).toEqual({ repository_id: A.id })

@@ -6,7 +6,7 @@ export { Engine, type EngineForExecutor, type EngineForMainSession, type EngineF
 export { UserError, USER_ERRORS, type UserErrorCode } from './errors.ts'
 export { REASONS, reasonText, said, type Reason, type ReasonCode } from './reasons.ts'
 export { MemoryRepositories } from './memory.ts'
-export { STEP_LIMITS, blockedReport, budgetState, budgetView, checkpointPrompt, countStep, freshBudget, retryBudget, stateOf,
-  type StepBudgetState, type StepOutcome } from './budget.ts'
+export { CHECKPOINT_DENIAL, DEFAULT_STEP_LIMITS, blockedReport, budgetState, budgetView, budgetStopNotice, checkpointPrompt, countStep,
+  freshBudget, retryBudget, stateOf, type StepBudgetState, type StepLimits, type StepLimitsConfig, type StepOutcome } from './budget.ts'
 export { canRetry, ticketStage, type TicketStage } from './stage.ts'
 export { key } from './ids.ts'

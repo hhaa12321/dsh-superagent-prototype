@@ -45,6 +45,16 @@ export class Replies extends EnginePart {
   }
   /** Withdraw a ticket's question for a person from the outbox, unless it went out already. */
   withdrawAttention(attentionId: string): void { this.options.outbox.withdraw(key('attention-reply', attentionId)) }
+  /**
+   * Queue the one status notice a hard stop sends to the Ticket's origin conversation, if it has one: its message ID is
+   * scoped by the Ticket and the budget epoch, so a restart cannot queue it twice and a later retry epoch queues its own. It
+   * is a `notice`, never a result, so nothing presents the stop as finished work.
+   */
+  budgetExhausted(ticket: Ticket, text: string): void {
+    const channel = this.sourceChannel(ticket)
+    if (!channel) return
+    this.options.outbox.send({ id: key('budget-stop', ticket.id, String(ticket.budget.epoch)), channel, text, kind: 'notice', ticketId: ticket.id })
+  }
   private acknowledge(request: Extract<ReplyRequest, { purpose: 'acknowledgement' }>): Reply {
     const ticket = this.require(request.ticketId)
     if (!liveTicket(ticket)) throw new UserError('ackEnded')

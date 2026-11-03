@@ -90,13 +90,24 @@ export const EvalConfigSchema = z.object({
 }).strict()
 const CommandNameSchema = z.string().regex(/^[A-Za-z0-9._-]+$/).refine(name => name !== '.' && name !== '..', 'Not a command name')
   .refine(name => !WORKER_COMMANDS.includes(name), `${WORKER_COMMANDS.join(', ')} cannot be blocked`)
-/** Executor settings: worker model, concurrency, ticket directory root (empty defaults to `<stateDir>/work`), `prepare` command, and blocked commands. */
+/** One deliverable's worker step thresholds: positive integers within the shared bounds, with `hard` above `soft`. */
+const StepLimitsSchema = z.object({
+  soft: z.number().int().min(LIMITS.stepBudget.min).max(LIMITS.stepBudget.max),
+  hard: z.number().int().min(LIMITS.stepBudget.min).max(LIMITS.stepBudget.max),
+}).strict().refine(limits => limits.hard > limits.soft, 'hard must be greater than soft')
+/** Executor settings: worker model, concurrency, ticket directory root (empty defaults to `<stateDir>/work`), `prepare` command, blocked commands, and worker step budgets. */
 export const ExecutorConfigSchema = z.object({
   model: RoleModelSchema.nullable().default(null),
   maxWorkers: z.number().int().min(LIMITS.maxWorkers.min).max(LIMITS.maxWorkers.max).default(3),
   directory: z.string().trim().refine(path => path === '' || path.startsWith('/'), 'An absolute path, or empty for <stateDir>/work').default(''),
   prepare: z.string().max(LIMITS.prepareCommand).default(''),
   blockedCommands: z.array(CommandNameSchema).default([]),
+  /**
+   * The soft checkpoint and the hard stop of each deliverable's worker, in worker steps. A Ticket snapshots them when it
+   * starts a budget epoch, so editing them leaves running Tickets alone.
+   */
+  stepBudgets: z.object({ analysis: StepLimitsSchema, change: StepLimitsSchema }).strict()
+    .default(() => ({ analysis: { soft: 30, hard: 50 }, change: { soft: 120, hard: 180 } })),
 }).strict()
 export const SourceInstanceSchema = z.object({
   /** Installed implementation that interprets this instance; the instance ID is independent of it. */

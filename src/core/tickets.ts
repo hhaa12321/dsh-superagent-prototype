@@ -58,7 +58,7 @@ export class Tickets extends EnginePart {
       }
     }
     let ticket: Ticket = { id, title: outcome.title, decisionId, repositoryId, mandate, channels: [], assignments: [], inputs: [], undelivered: [],
-      createdAt: at, updatedAt: at, origin, budget: freshBudget() }
+      createdAt: at, updatedAt: at, origin, budget: freshBudget(this.stepLimits(mandate.deliverable)) }
     for (const triggerId of triggerIds) {
       const channel = this.repo.triggers.get(triggerId)?.channel
       if (channel && !ticket.channels.some(item => sameChannel(item, channel))) ticket.channels.push(channel)
@@ -189,7 +189,8 @@ export class Tickets extends EnginePart {
   }
   /**
    * Ends the stalled assignment of a retryable open ticket (`failed`, `blocked`, or failed input delivery) and starts a new one,
-   * with one fresh step budget epoch: this, and nothing automatic, resets the worker's budget.
+   * with one fresh step budget epoch snapshotted from the Execution settings current now: this, and nothing automatic,
+   * resets the worker's budget.
    * @throws UserError when the ticket is unknown or not retryable.
    */
   retry(ticketId: string): Ticket {
@@ -198,7 +199,7 @@ export class Tickets extends EnginePart {
     if (!canRetry(ticket) || !latest) throw new UserError('notRetryable')
     this.endAssignment(ticket, latest, 'retried')
     this.requeueUntaken(ticket, latest)
-    ticket.budget = retryBudget(ticket.budget)
+    ticket.budget = retryBudget(ticket.budget, this.stepLimits(ticket.mandate.deliverable))
     const assignment = this.newAssignment(ticket)
     ticket.updatedAt = this.now()
     this.repo.tickets.save(ticket)
@@ -406,13 +407,14 @@ export class Tickets extends EnginePart {
     return report?.state !== 'ready' || ticket.undelivered.length > 0 || later
   }
   /**
-   * Count the worker step at Session sequence `seq` on the ticket's durable budget, once, and report what the step reached.
-   * A replayed or duplicate sequence number changes nothing. Nothing but `retry` starts a fresh epoch.
+   * Count the worker step at Session sequence `seq` on the ticket's durable budget, once, against the limits its epoch was
+   * snapshotted with, and report what the step reached. A replayed or duplicate sequence number changes nothing. Nothing but
+   * `retry` starts a fresh epoch.
    * @throws UserError when the ticket is unknown.
    */
   stepped(ticketId: string, seq: number): StepOutcome {
     const ticket = this.require(ticketId)
-    const result = countStep(ticket.budget, ticket.mandate.deliverable, seq)
+    const result = countStep(ticket.budget, seq)
     // A duplicate sequence number, and a step after the hard stop of the same epoch, only record the watermark. The budget is
     // bookkeeping, so it does not restamp the Ticket's own last change.
     if (result.changed) { ticket.budget = result.budget; this.repo.tickets.save(ticket) }
