@@ -307,7 +307,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/core/evals.ts` | `Evals`: the Evals of Threads and their Decisions |
 | `src/core/tickets.ts` | `Tickets`: the Ticket lifecycle, the Threads a Ticket follows, Subscriptions and Inputs |
 | `src/core/assignments.ts` | `Assignments`: the Executor's facts and its workers' Reports |
-| `src/core/budget.ts` | The worker step budget: the fixed limits each deliverable's Mandate sets, counting a `step/start` once by Session sequence number, the one checkpoint prompt, and the blocked report of the hard stop |
+| `src/core/budget.ts` | The worker step budget: the configurable limits snapshotted onto each Ticket's epoch, counting a `step/start` once by Session sequence number, the checkpoint prompt and the guard denial it enforces, the blocked report of the hard stop, and its one status notice |
 | `src/core/replies.ts` | `Replies`: the Engine's Channel writes |
 | `src/core/stage.ts` | `ticketStage` and `canRetry`: the Ticket stages of [003 Execution](003-execution.md) |
 | `src/core/errors.ts` | `UserError` and `USER_ERRORS` |
@@ -446,7 +446,7 @@ The three built-in adapters do not share a provider-shaped API. GitHub reads and
 | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |
 | `tests/assessment.spec.ts` | What the MasterAssessor keeps per Eval, and when it lets go |
 | `tests/background.spec.ts` | Waiting for a worker's shell jobs and subagents: an end that woke it, and a host that stops |
-| `tests/budget.spec.ts` | The durable worker step budget: the limits of each deliverable, one count per Session sequence number, the single soft checkpoint, the hard stop's blocked report and cancelled turn, the fresh epoch only an explicit retry starts, a restart, other Sessions' steps, and the projections |
+| `tests/budget.spec.ts` | The durable worker step budget: the configured limits and their validation, the snapshot a Ticket keeps across a restart and takes again on an explicit retry, one count per Session sequence number, the single soft checkpoint with the guard that then allows only the final report, the hard stop's blocked report, cancelled turn and one status notice per epoch, other Sessions' steps, and the projections |
 | `tests/bundle-patch.spec.ts` | The bundle's patch, read as DeepSeek Harness reads it, and the agent preset of Executor Sessions it defines |
 | `tests/effects.spec.ts` | The effect queue: coalescing, limits, retries with backoff, health and shutdown |
 | `tests/passes.spec.ts` | Passes: one at a time, the ones asked for during a pass run as one after it, and the runtime health a failed pass reports |
@@ -522,7 +522,7 @@ Read caches use bounded in-memory `TextCache` instances and are lost on restart.
 
 Nothing deletes old records yet, so these grow without bound: the `trigger`, `disposition` and `decision` rows; ended Tickets and their Threads; the outbox's receipts; and in `kv`, every saved settings revision and prompt version, the prompt revisions each Session worked under, and the Sources' records per Thread and per Issue or pull request.
 
-`SCHEMA_VERSION` only increases. A database of a newer version refuses to start; a database older than `OLDEST_SCHEMA` is refused with an instruction to start with a new state directory. There is no migration, dual read, or fallback: repository identity is part of the schema from its first version. Version 15 adds the worker step budget that every Ticket carries in its stored JSON (`budget`: the steps used, the Session sequence watermark, the epoch and the status); an earlier state directory is refused as a whole.
+`SCHEMA_VERSION` only increases. A database of a newer version refuses to start; a database older than `OLDEST_SCHEMA` is refused with an instruction to start with a new state directory. There is no migration, dual read, or fallback: repository identity is part of the schema from its first version. Version 15 adds the worker step budget that every Ticket carries in its stored JSON (`budget`: the steps used, the Session sequence watermark, the epoch and the status); version 16 adds the `soft` and `hard` limits every budget snapshots, so an earlier state directory is refused as a whole.
 
 ## Model-facing interfaces
 
