@@ -65,7 +65,7 @@ const subscribed = (h: ReturnType<typeof host>, ref: { source: string; id: strin
   h.store.threads.save({ key: `${ref.source}:${ref.id}`, ref, createdAt: new Date().toISOString(), subscriptions: ['ticket'], correlated: [], pending: [], meta })
 const openTicket = (id: string): Ticket => ({ id, title: id, decisionId: `d-${id}`, repositoryId: REPO, mandate: { strength: 'explicit', deliverable: 'change', policyVersion: '',
   basis: { via: 'listed' }, actor: { source: 'github', id: 'alice' }, scope: '' },
-  channels: [], assignments: [], inputs: [], undelivered: [], createdAt: '', updatedAt: '', budget: { used: 0, lastSeq: -1, epoch: 1, status: 'ok' }, origin: { triggerId: `source-${id}`, triggerIds: [] } })
+  channels: [], assignments: [], inputs: [], undelivered: [], createdAt: '', updatedAt: '', budget: { used: 0, lastSeq: -1, epoch: 1, status: 'ok', soft: 120, hard: 180 }, origin: { triggerId: `source-${id}`, triggerIds: [] } })
 const execution = (name: string) => ({ name, directory: `/w/${name}`, assignment: '' })
 const pulled = (number: number) => ({ follows: [{ thread: `github:${number}`, own: true, repositoryId: REPO }] })
 const endedPull = (number: number, at: string, merged = true): Pull =>
@@ -413,7 +413,7 @@ describe('github source', () => {
     const decisionId = 'd'
     const request = feishuTrigger({ message_id: 'om_1', chat_id: 'oc_1', chat_type: 'group', sender_id: MEMBER, sender_type: 'user', content: '@bot 修一下标题', create_time: '1', mentions: [{ id: 'ou_bot' }] }, 'ou_bot', 'cli_bot')!
     h.store.triggers.save(request)
-    h.store.tickets.save({ id: 't1', title: 'one', repositoryId: REPO, decisionId, mandate: { strength: 'explicit', deliverable: 'change', policyVersion: '', basis: { via: 'listed' }, actor: { source: 'feishu', id: MEMBER }, scope: '' }, channels: [{ source: 'feishu', thread: 'feishu:oc_1', address: { chatId: 'oc_1', messageId: 'om_1' } }], assignments: [{ id: 'a', state: 'running', createdAt: '' }], inputs: [], undelivered: [], createdAt: '', updatedAt: '', execution: execution('one'), budget: { used: 0, lastSeq: -1, epoch: 1, status: 'ok' }, origin: { triggerId: request.id, triggerIds: [request.id] } })
+    h.store.tickets.save({ id: 't1', title: 'one', repositoryId: REPO, decisionId, mandate: { strength: 'explicit', deliverable: 'change', policyVersion: '', basis: { via: 'listed' }, actor: { source: 'feishu', id: MEMBER }, scope: '' }, channels: [{ source: 'feishu', thread: 'feishu:oc_1', address: { chatId: 'oc_1', messageId: 'om_1' } }], assignments: [{ id: 'a', state: 'running', createdAt: '' }], inputs: [], undelivered: [], createdAt: '', updatedAt: '', execution: execution('one'), budget: { used: 0, lastSeq: -1, epoch: 1, status: 'ok', soft: 120, hard: 180 }, origin: { triggerId: request.id, triggerIds: [request.id] } })
     const agentsPull = (number: number): Pull => ({ ...openPull(number), user: { login: 'agent-bot' }, head: { sha: 'abc',
       ref: 'agent/one', repo: { full_name: 'acme/widgets' } } })
     await observePull(h.github, agentsPull(9))
@@ -443,7 +443,7 @@ describe('github source', () => {
   })
   it('keeps a ticket working on its other open PR when one of its PRs merges', async () => {
     const h = host()
-    h.store.tickets.save({ id: 't3', title: 'three', repositoryId: REPO, decisionId: 'd3', mandate: { strength: 'explicit', deliverable: 'change', policyVersion: '', basis: { via: 'listed' }, actor: { source: 'feishu', id: MEMBER }, scope: '' }, channels: [], assignments: [{ id: 'a1', state: 'running', createdAt: '2026-09-01T00:00:00Z' }], inputs: [], undelivered: [], execution: execution('fix-3'), budget: { used: 0, lastSeq: -1, epoch: 1, status: 'ok' }, origin: { triggerId: 'x', triggerIds: [] }, createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z' })
+    h.store.tickets.save({ id: 't3', title: 'three', repositoryId: REPO, decisionId: 'd3', mandate: { strength: 'explicit', deliverable: 'change', policyVersion: '', basis: { via: 'listed' }, actor: { source: 'feishu', id: MEMBER }, scope: '' }, channels: [], assignments: [{ id: 'a1', state: 'running', createdAt: '2026-09-01T00:00:00Z' }], inputs: [], undelivered: [], execution: execution('fix-3'), budget: { used: 0, lastSeq: -1, epoch: 1, status: 'ok', soft: 120, hard: 180 }, origin: { triggerId: 'x', triggerIds: [] }, createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z' })
     expect(claimPull(h.github, 't3', agentsPull(21, 'agent/fix-3'))).toBeUndefined()
     expect(claimPull(h.github, 't3', agentsPull(22, 'agent/fix-3'))).toBeUndefined()
     expect(await observePull(h.github, endedPull(22, '2026-09-02T00:00:00Z'))).toBe(true)
@@ -468,7 +468,7 @@ describe('github source', () => {
   })
   it('ends a ticket when its own PR merges, though the PR it started from is still open', async () => {
     const h = host()
-    h.store.tickets.save({ id: 't4', title: 'four', repositoryId: REPO, decisionId: 'd4', mandate: { strength: 'explicit', deliverable: 'change', policyVersion: '', basis: { via: 'listed' }, actor: { source: 'github', id: 'alice' }, scope: '' }, channels: [githubChannel(githubRef, 30, 'https://github.com/acme/widgets/pull/30#issuecomment-1')], assignments: [{ id: 'a1', state: 'running', createdAt: '2026-09-01T00:00:00Z' }], inputs: [], undelivered: [], execution: execution('fix-4'), budget: { used: 0, lastSeq: -1, epoch: 1, status: 'ok' }, origin: { triggerId: 'x', triggerIds: [] }, createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z' })
+    h.store.tickets.save({ id: 't4', title: 'four', repositoryId: REPO, decisionId: 'd4', mandate: { strength: 'explicit', deliverable: 'change', policyVersion: '', basis: { via: 'listed' }, actor: { source: 'github', id: 'alice' }, scope: '' }, channels: [githubChannel(githubRef, 30, 'https://github.com/acme/widgets/pull/30#issuecomment-1')], assignments: [{ id: 'a1', state: 'running', createdAt: '2026-09-01T00:00:00Z' }], inputs: [], undelivered: [], execution: execution('fix-4'), budget: { used: 0, lastSeq: -1, epoch: 1, status: 'ok', soft: 120, hard: 180 }, origin: { triggerId: 'x', triggerIds: [] }, createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z' })
     h.store.threads.save({ key: 'github:30', ref: { source: 'github', id: '30' }, createdAt: '', subscriptions: ['t4'], correlated: [], pending: [], meta: { number: 30, isPr: true } })
     expect(claimPull(h.github, 't4', agentsPull(31, 'agent/fix-4'))).toBeUndefined()
     expect(await observePull(h.github, endedPull(31, '2026-09-02T00:00:00Z'))).toBe(true)
@@ -479,7 +479,7 @@ describe('github source', () => {
     const h = host()
     const request = feishuTrigger({ message_id: 'om_2', chat_id: 'oc_1', chat_type: 'group', sender_id: MEMBER, sender_type: 'user', content: '@bot fix the title', create_time: '1', mentions: [{ id: 'ou_bot' }] }, 'ou_bot', 'cli_bot')!
     h.store.triggers.save(request)
-    h.store.tickets.save({ id: 't2', title: 'two', repositoryId: REPO, decisionId: 'd2', mandate: { strength: 'explicit', deliverable: 'change', policyVersion: '', basis: { via: 'listed' }, actor: { source: 'feishu', id: MEMBER }, scope: '' }, channels: [{ source: 'feishu', thread: 'feishu:oc_1', address: { chatId: 'oc_1', messageId: 'om_2' } }], assignments: [], inputs: [], undelivered: [], createdAt: '', updatedAt: '', ...pulled(12), budget: { used: 0, lastSeq: -1, epoch: 1, status: 'ok' }, origin: { triggerId: request.id, triggerIds: [request.id] } })
+    h.store.tickets.save({ id: 't2', title: 'two', repositoryId: REPO, decisionId: 'd2', mandate: { strength: 'explicit', deliverable: 'change', policyVersion: '', basis: { via: 'listed' }, actor: { source: 'feishu', id: MEMBER }, scope: '' }, channels: [{ source: 'feishu', thread: 'feishu:oc_1', address: { chatId: 'oc_1', messageId: 'om_2' } }], assignments: [], inputs: [], undelivered: [], createdAt: '', updatedAt: '', ...pulled(12), budget: { used: 0, lastSeq: -1, epoch: 1, status: 'ok', soft: 120, hard: 180 }, origin: { triggerId: request.id, triggerIds: [request.id] } })
     expect(await observePull(h.github, endedPull(12, '2026-09-02T00:00:00Z', false))).toBe(true)
     expect(pullEndNotices(h.store.tickets.get('t2')!, request.text, 'acme/widgets'))
       .toEqual([expect.objectContaining({ text: '[PR #12](https://github.com/acme/widgets/pull/12) was closed without merging.' })])
@@ -953,7 +953,7 @@ describe('github source', () => {
     const source = commentTrigger({ id: 1, body: '@agent-bot fix', user: { login: 'alice' },
       html_url: 'https://github.com/acme/widgets/pull/30#issuecomment-1' }, { number: 30, isPr: true }, 'conversation', 'agent-bot', githubRef)
     h.store.triggers.save(source)
-    h.store.tickets.save({ ...openTicket('t1'), execution: execution('fix-1'), budget: { used: 0, lastSeq: -1, epoch: 1, status: 'ok' }, origin: { triggerId: source.id, triggerIds: [source.id] } })
+    h.store.tickets.save({ ...openTicket('t1'), execution: execution('fix-1'), budget: { used: 0, lastSeq: -1, epoch: 1, status: 'ok', soft: 120, hard: 180 }, origin: { triggerId: source.id, triggerIds: [source.id] } })
     h.store.tickets.save({ ...openTicket('t2'), execution: execution('other-2'), ...pulled(41) })
     const agents = (number: number, ref: string, repo = 'acme/widgets'): Pull => ({ ...openPull(number), user: { login: 'agent-bot' },
       head: { sha: 'abc', ref, repo: { full_name: repo } } })
@@ -1022,7 +1022,7 @@ describe('source context', () => {
     h.tickets.bindThread('t1', { source: 'github', id: '4' }, true)
     // The ticket follows the Thread; its other fields stay as they were.
     expect(h.store.tickets.get('t1')).toMatchObject({ follows: [{ thread: 'github:4', own: true }], execution: execution('one'),
-      budget: { used: 0, lastSeq: -1, epoch: 1, status: 'ok' }, origin: { triggerId: 'source-t1' } })
+      budget: { used: 0, lastSeq: -1, epoch: 1, status: 'ok', soft: 120, hard: 180 }, origin: { triggerId: 'source-t1' } })
     h.store.close()
   })
 })

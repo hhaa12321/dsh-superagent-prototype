@@ -134,9 +134,19 @@ it('keeps what a person types in the Execution settings, converting it once on s
   await type(workers(), '')
   expect(workers().value).toBe('')
   await type(workers(), '2')
+  // The four step-budget thresholds keep a cleared number as typed and are converted once on save.
+  const analysisSoft = () => field<HTMLInputElement>('分析工单：检查点'), analysisHard = () => field<HTMLInputElement>('分析工单：硬上限'),
+    changeSoft = () => field<HTMLInputElement>('变更工单：检查点'), changeHard = () => field<HTMLInputElement>('变更工单：硬上限')
+  expect([analysisSoft().value, analysisHard().value, changeSoft().value, changeHard().value]).toEqual(['30', '50', '120', '180'])
+  await type(analysisSoft(), '')
+  expect(analysisSoft().value).toBe('')
+  await type(analysisSoft(), '15'); await type(analysisHard(), '25')
+  await type(changeSoft(), '70'); await type(changeHard(), '95')
   await click(zh.save)
-  expect(server.requests.find(request => request.path === 'settings/executor')?.body).toMatchObject({ value: { blockedCommands: ['gh-personal', 'gh-other'], directory: '/srv/my work ', maxWorkers: 2 } })
-  expect(server.settings.executor).toMatchObject({ blockedCommands: ['gh-personal', 'gh-other'], directory: '/srv/my work', maxWorkers: 2 })
+  expect(server.requests.find(request => request.path === 'settings/executor')?.body).toMatchObject({ value: { blockedCommands: ['gh-personal', 'gh-other'], directory: '/srv/my work ', maxWorkers: 2,
+    stepBudgets: { analysis: { soft: 15, hard: 25 }, change: { soft: 70, hard: 95 } } } })
+  expect(server.settings.executor).toMatchObject({ blockedCommands: ['gh-personal', 'gh-other'], directory: '/srv/my work', maxWorkers: 2,
+    stepBudgets: { analysis: { soft: 15, hard: 25 }, change: { soft: 70, hard: 95 } } })
 })
 
 it('says why an Input was not delivered on its Ticket\'s page, in either language', async () => {

@@ -12,7 +12,7 @@ function harness() {
     agents: { get: (id: string) => agents.get(id) } }
   const ticket: Ticket = { id: 'ticket-a', title: 'Fix', decisionId: 'd', repositoryId: testRepository.id,
     mandate: { strength: 'explicit', deliverable: 'change', policyVersion: 'v', basis: { via: 'listed' }, actor: { source: 'github', id: 'alice' }, scope: '' },
-    channels: [], assignments: [], inputs: [], undelivered: [], createdAt: '1', updatedAt: '1', budget: { used: 0, lastSeq: -1, epoch: 1, status: 'ok' }, origin: { triggerId: 'issue-12', triggerIds: ['issue-12'] },
+    channels: [], assignments: [], inputs: [], undelivered: [], createdAt: '1', updatedAt: '1', budget: { used: 0, lastSeq: -1, epoch: 1, status: 'ok', soft: 120, hard: 180 }, origin: { triggerId: 'issue-12', triggerIds: ['issue-12'] },
     execution: { name: 'fix', directory: '/work/github:101/fix', assignment: '' } }
   const host = { ctx, ticketOfSession: (id: string) => id === 'worker-ticket-a' ? ticket : undefined,
     repositoryOf: () => testRepository, credentialOf: () => ({ login: 'agent-bot', commitEmail: '7+agent-bot@users.noreply.github.com' }),

@@ -4,7 +4,7 @@ import { canRetry, ticketStage, type Assignment, type ReportState, type Ticket }
 const assignment = (overrides: Partial<Assignment> = {}): Assignment => ({ id: 'a', state: 'running', createdAt: '', ...overrides })
 const reported = (state: ReportState, overrides: Partial<Assignment> = {}) => assignment({ report: { state, summary: '', at: '' }, ...overrides })
 const ticket = (overrides: Partial<Ticket> = {}): Ticket => ({ id: 't', title: 'x', decisionId: 'd', mandate: { strength: 'explicit', deliverable: 'change', policyVersion: 'v', basis: { via: 'listed' }, actor: { source: 'feishu', id: 'ou' }, scope: '' },
-  channels: [], assignments: [assignment()], inputs: [], undelivered: [], createdAt: '', updatedAt: '', budget: { used: 0, lastSeq: -1, epoch: 1, status: 'ok' }, origin: { triggerId: 'x', triggerIds: ['x'] }, ...overrides })
+  channels: [], assignments: [assignment()], inputs: [], undelivered: [], createdAt: '', updatedAt: '', budget: { used: 0, lastSeq: -1, epoch: 1, status: 'ok', soft: 120, hard: 180 }, origin: { triggerId: 'x', triggerIds: ['x'] }, ...overrides })
 const attention = { id: 'q', question: '?' }
 /** A person's message that reached the Ticket after its report. */
 const answered = { inputs: [{ id: 'i', kind: 'trigger' as const, triggerId: 'e', at: 'later', human: true as const }] }

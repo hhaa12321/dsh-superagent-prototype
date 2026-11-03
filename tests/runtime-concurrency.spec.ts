@@ -884,7 +884,7 @@ describe('the Executor\'s parts', () => {
   it('words an assignment, and the limits an inferred mandate sets, from the ticket alone', () => {
     const settings = SettingsSchema.parse({ policy: { rules: [{ id: 'copy', name: 'Copy fixes', enabled: true,
       instruction: 'Fix typos only.' }] } })
-    const ticket = { id: 'ticket-0123456789abcdef', budget: { used: 0, lastSeq: -1, epoch: 1, status: 'ok' }, origin: { triggerId: 'tr1', triggerIds: [] },
+    const ticket = { id: 'ticket-0123456789abcdef', budget: { used: 0, lastSeq: -1, epoch: 1, status: 'ok', soft: 120, hard: 180 }, origin: { triggerId: 'tr1', triggerIds: [] },
       mandate: { strength: 'inferred', deliverable: 'change', policyVersion: 'v1', basis: { rules: ['copy'] }, actor: { source: 'github', id: 'alice' },
         scope: '' } } as unknown as Ticket
     const execution = ticketExecution(ticket, { kind: 'accept', title: 'Fix', scope: 'the typo', reason: 'r', name: 'fix-typo' } as never,
@@ -939,7 +939,7 @@ describe('the Executor\'s parts', () => {
   })
   it('relays a worker\'s question, result or answer to the main Session, and keeps its progress internal', () => {
     const ticket = { id: 't1', title: 'Fix', updatedAt: '2026-09-01T00:00:00Z', attention: { id: 'a1', question: 'Which color?' }, assignments: [],
-      mandate: { strength: 'explicit', deliverable: 'change' }, budget: { used: 0, lastSeq: -1, epoch: 1, status: 'ok' }, origin: { triggerId: 'tr1' } } as unknown as Ticket
+      mandate: { strength: 'explicit', deliverable: 'change' }, budget: { used: 0, lastSeq: -1, epoch: 1, status: 'ok', soft: 120, hard: 180 }, origin: { triggerId: 'tr1' } } as unknown as Ticket
     expect(reportRelay(ticket, { state: 'progress', summary: 'halfway' })).toBeUndefined()
     expect(reportRelay(ticket, { state: 'blocked', summary: 'need input', question: 'Which color?' }))
       .toMatchObject({ id: 'attention:t1:a1', text: expect.stringContaining('"kind":"worker_attention"') })

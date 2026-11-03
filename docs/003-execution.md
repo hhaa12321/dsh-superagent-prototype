@@ -119,24 +119,37 @@ Sources poll subscribed Threads while a live Ticket subscribes, and for two week
 
 ## Worker step budget
 
-A Ticket's worker has a fixed step budget, so a broad analysis cannot keep opening new investigations forever. The limits
-come from the Mandate's persisted deliverable and are not configurable: `analysis` gets a soft checkpoint at 30 steps and a
-hard stop at 50, and `change` at 120 and 180. A step is one DSH `step/start`, a model call plus the tools it asked for; a
-long build or test uses none, so no wall-clock deadline applies.
+A Ticket's worker has a step budget, so a broad analysis cannot keep opening new investigations forever. The Execution
+settings hold the soft checkpoint and the hard stop of each deliverable under `executor.stepBudgets`, within the shared
+bounds and with every hard stop above its checkpoint; they default to `analysis` 30 and 50 and `change` 120 and 180. A
+step is one DSH `step/start`, a model call plus the tools it asked for; a long build or test uses none, so no wall-clock
+deadline applies.
 
-The count is durable on the Ticket: the steps used, the Session sequence number of the last counted step, the epoch, and
-the status. Each `step/start` counts once while it has a higher sequence number than the watermark, so a replay, a repeated
-event or a host restart counts nothing twice, and only the Ticket's live Assignment counts. At the soft limit the worker
-gets one steering prompt, keyed to the epoch: stop expanding scope, synthesize what is already known, mark missing facts
-`UNKNOWN` and report promptly. For an `analysis` this means no new work; for a `change` it narrows to finishing the current
-verified change. At the hard limit the Ticket records a `blocked` Report naming the deliverable, the steps used and the
-limit, and the worker's turn and background work stop. The Ticket stays open and retryable; a person's explicit retry
-starts one fresh epoch, while an automatic restart, a transient retry or an ordinary Input delivery does not.
+The limits are part of the Ticket's durable budget: a new Ticket snapshots the settings current at acceptance, an explicit
+retry snapshots the settings current then in its new epoch, and a restart keeps them. Editing the settings therefore
+leaves running Tickets on the values their epoch started with. The count is durable beside them: the steps used, the
+Session sequence number of the last counted step, the epoch, and the status. Each `step/start` counts once while it has a
+higher sequence number than the watermark, so a replay, a repeated event or a host restart counts nothing twice, and only
+the Ticket's live Assignment counts.
+
+At the soft limit the worker gets one steering prompt, keyed to the epoch: stop expanding scope, start no other
+investigation, synthesize the evidence already collected, mark missing facts `UNKNOWN` and report now. For an `analysis`
+this means no new work in the same Ticket; for a `change` it narrows to finishing the current verified change. The
+checkpoint is also enforced by the worker's tool guard, which the worker and its subagents share: from then on only
+`orchestrator_report` may run, and any other tool is refused with the reason to report from evidence already collected.
+At the hard limit the Ticket records a `blocked` Report naming the deliverable, the steps used and the limit, and the
+worker's turn and background work stop. The Ticket stays open and retryable; a person's explicit retry starts one fresh
+epoch, while an automatic restart, a transient retry or an ordinary Input delivery does not.
 
 That blocked Report is the epoch's last word. While the budget is `blocked`, the domain refuses any other Report on the
 Ticket and the Executor records no `waiting` or `failed` one of its own, so a tool call of the cancelled step that still
 lands, or a turn that goes idle, cannot turn the hard stop into a result, a wait, a failure or progress, whatever order
 they ran in. Only the retry, which resets the budget, accepts Reports again.
+
+A hard stop also tells the Ticket's origin conversation, once per Ticket and budget epoch, that the ticket stopped because
+its step budget was exhausted, with the deliverable and the steps used of the limit, and that an explicit retry starts a
+fresh budget. The message is an Outbox `notice` whose ID is derived from the Ticket and the epoch, so a restart cannot
+send it twice and a later epoch sends its own; it never presents the stop as a result.
 
 ## Failure and recovery
 

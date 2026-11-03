@@ -1,6 +1,7 @@
 /** What the Executor and its workers report about the Assignments that run tickets. */
 import { key } from './ids.ts'
 import { UserError } from './errors.ts'
+import { budgetState, budgetStopNotice } from './budget.ts'
 import { latestAssignment, liveTicket, runningAssignment } from './model.ts'
 import type { ReportState, Ticket } from './model.ts'
 import { EnginePart, type EngineOptions } from './part.ts'
@@ -130,6 +131,9 @@ export class Assignments extends EnginePart {
     if (report.answers) this.takeUp(ticketId, report.answers)
     if (report.state === 'blocked' || report.state === 'failed') ticket.undelivered = ticket.undelivered.filter(id => !automatic(ticket.inputs.find(input => input.id === id)))
     this.repo.tickets.save(ticket)
+    // A hard stop tells the Ticket's origin conversation, once per budget epoch, that it stopped for its step budget rather
+    // than reporting a result; the outbox ID makes a restart or a repeated stop queue nothing twice.
+    if (ticket.budget.status === 'blocked') this.replies.budgetExhausted(ticket, budgetStopNotice(budgetState(ticket)))
     // A ticket that follows Threads ends with them: a ready report ends it only once followsDone holds, with that outcome.
     const ready = !ticket.follows?.length ? 'completed' : this.tickets.followsDone(ticket)?.outcome
     // A dropped report after a close the ticket deferred ends it as the close did, which its final notice tells.
