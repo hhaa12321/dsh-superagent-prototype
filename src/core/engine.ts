@@ -1,4 +1,5 @@
 /** The domain Engine: the single entry point of the core, and the role interfaces its callers receive. */
+import type { StepOutcome } from './budget.ts'
 import { UserError } from './errors.ts'
 import { isoTime, liveTicket } from './model.ts'
 import type { ChannelRef, Decision, PolicyEffect, ThreadRef, Ticket, Trigger } from './model.ts'
@@ -189,6 +190,15 @@ export class Engine {
   inputsRead(ticketId: string, inputIds: string[]): void {
     this.repo.atomic(() => { this.assignments.read(ticketId, inputIds) })
   }
+  /**
+   * The Executor's fact that a worker's Session began the step at Session sequence `seq`: its Ticket's durable budget counts
+   * it once, and the returned outcome says whether the step reached the soft checkpoint or the hard stop. A replayed or
+   * duplicate sequence number counts nothing.
+   * @throws UserError when the ticket is unknown.
+   */
+  stepped(ticketId: string, seq: number): StepOutcome {
+    return this.repo.atomic(() => this.tickets.stepped(ticketId, seq))
+  }
   /** The Executor's fact that a turn of the worker of the Assignment that runs the ticket ended, after a report too. */
   turnEnded(ticketId: string, assignmentId: string): void {
     this.repo.atomic(() => { this.assignments.turnEnded(ticketId, assignmentId) })
@@ -267,4 +277,4 @@ export type EngineForPeople = Pick<Engine, 'stopTicket' | 'retryTicket' | 'reeva
 export type EngineForSettings = Pick<Engine, 'policyChanged'>
 /** What the Executor tells the Engine, and what its workers ask of it. */
 export type EngineForExecutor = Pick<Engine, 'assignmentStarted' | 'inputsDelivered' | 'inputsRead' | 'turnEnded' | 'deliveryFailed'
-  | 'assignmentInterrupted' | 'report' | 'markUnrelated' | 'handback' | 'followForContext' | 'reply'>
+  | 'assignmentInterrupted' | 'stepped' | 'report' | 'markUnrelated' | 'handback' | 'followForContext' | 'reply'>

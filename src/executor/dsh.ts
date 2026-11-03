@@ -4,7 +4,8 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { mkdir, rmdir, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { key, latestAssignment, latestReport, liveTicket, runningAssignment, threadKey, waitsForPerson } from '../core/index.ts'
+import { blockedReport, checkpointPrompt, key, latestAssignment, latestReport, liveTicket, runningAssignment, threadKey, waitsForPerson,
+  type StepBudgetState } from '../core/index.ts'
 import type { AssessmentOutcome, Assignment, EngineForExecutor, Execution, Executor, Mandate, PolicyEffect, Ticket, TicketInput, Trigger }
   from '../core/index.ts'
 import type { Machine } from '../deployment.ts'
@@ -62,7 +63,7 @@ export interface ExecutorHost {
   readonly context: Context
   /** Where the Executor reports what happened to Assignments and Inputs. */
   readonly engine: Pick<EngineForExecutor, 'assignmentStarted' | 'inputsDelivered' | 'inputsRead' | 'turnEnded' | 'deliveryFailed' | 'report'
-    | 'assignmentInterrupted'>
+    | 'assignmentInterrupted' | 'stepped'>
   readonly store: Pick<Store, 'tickets' | 'triggers' | 'set' | 'settings' | 'atomic' | 'afterCommit'>
   /** Durable effect queue through which launches and input deliveries run. */
   readonly effects: Pick<Effects, 'enqueue' | 'handle'>
@@ -518,9 +519,60 @@ export class DshExecutor implements Executor {
       const ticket = this.ticketOf(agent)
       const assignment = ticket && runningAssignment(ticket)
       if (!ticket || !assignment || !liveTicket(ticket) || this.host.closing()) return
+      // A turn the hard stop cancelled fails as an abort, which is no failure of the worker's: its blocked report stands.
+      if (ticket.budget?.status === 'blocked') return
       if (this.retries(assignment.id, error)) { this.resumeAfter(ticket.id, assignment.id, error); return }
       void this.background(Promise.resolve().then(() => { this.failed(ticket.id, String(error)) }))
     }))
+    // A worker step is counted on its Ticket's durable budget from the Session sequence number, which makes a replay or a
+    // duplicate count nothing; the step that reaches a limit is the one that gets the checkpoint or the hard stop.
+    this.disposers.push(ctx.on('session/event', (session, event) => {
+      if (event.type !== 'step/start') return
+      const ticketId = ticketOfSession(session.id)
+      if (ticketId === undefined || this.host.closing()) return
+      void this.background(Promise.resolve().then(() => { this.stepped(ticketId, Number(event.seq)) }))
+    }))
+  }
+  /**
+   * Counts the worker step at Session sequence `seq` for its Ticket's live Assignment: the soft limit steers the worker once
+   * with the checkpoint prompt, and the hard limit records a `blocked` report and stops the worker's turn and background work.
+   * A Ticket that ended, or whose live Assignment ended, counts nothing.
+   */
+  private stepped(ticketId: string, seq: number): void {
+    const ticket = this.host.store.tickets.get(ticketId)
+    // The live Assignment counts from its first step, which may arrive a moment before `assignmentStarted` marks it running;
+    // an ended or replaced one, and a Session that is no Ticket's, counts nothing.
+    const assignment = ticket && liveTicket(ticket) ? latestAssignment(ticket) : undefined
+    if (!ticket || !assignment || assignment.state === 'ended' || !Number.isSafeInteger(seq)) return
+    const sessionId = workerSessionId(ticketId)
+    const outcome = this.host.engine.stepped(ticketId, seq)
+    if (!outcome.counted) return
+    if (outcome.blocked) { this.budgetExhausted(ticketId, outcome.state); return }
+    if (outcome.checkpoint) {
+      // One stable idempotency key per epoch, so a restart or a repeated step never steers the worker twice.
+      const text = checkpointPrompt(outcome.state.deliverable, outcome.state)
+      void this.background(this.host.sessions.prompt(sessionId, `budget:${ticketId}:${outcome.state.epoch}:checkpoint`, text, 'steer'))
+    }
+  }
+  /**
+   * Records the hard stop of a worker's step budget as a `blocked` report, whose summary names the deliverable and the limit,
+   * and then cancels its turn and background work. The Ticket stays open, so only an explicit retry starts a fresh epoch.
+   */
+  private budgetExhausted(ticketId: string, state: StepBudgetState): void {
+    const summary = blockedReport(state)
+    const sessionId = workerSessionId(ticketId)
+    this.host.store.atomic(() => {
+      const ticket = this.host.store.tickets.get(ticketId)
+      if (!ticket || !liveTicket(ticket)) return
+      const updated = this.host.engine.report(ticketId, { state: 'blocked', summary })
+      this.relay(resultRelay(updated, 'blocked', summary))
+      this.host.store.afterCommit(() => {
+        // The look at the worker's background work ends with the turn, as a stopped Assignment's does.
+        this.settling.get(ticketId)?.abort()
+        this.host.context.agents.get(sessionId as SessionId)?.cancel({ kind: 'user' }, { keepInbox: false })
+        this.stopWork(ticketId, 'worker step budget exhausted')
+      })
+    })
   }
   /** Unsubscribes from host agent events and clears any pending transient-retry timers. */
   dispose(): void {
