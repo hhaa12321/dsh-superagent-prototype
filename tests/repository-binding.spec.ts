@@ -44,7 +44,7 @@ function harness(settings: Settings) {
     engine.receive(issue(ref, number))
     engine.evaluateDue()
     const candidate = requests.at(-1)!
-    const decision = engine.decide(candidate.triggers[0]!.id, { kind: 'accept', title: 'Fix the login', scope: 'the login form', reason: 'asked',
+    const decision = engine.decide(candidate.triggers[0]!.id, { kind: 'accept', deliverable: 'change', title: 'Fix the login', scope: 'the login form', reason: 'asked',
       name: 'fix-login', evalId: candidate.evalId })
     return repo.tickets.get(decision.ticketId!)!
   }
@@ -132,7 +132,7 @@ describe('repository binding identity', () => {
     sourceId => sourceId === refA.sourceId ? A : sourceId === refB.sourceId ? B : undefined)
     sources.register(githubKind)
     const ticket: Ticket = { id: 't-a', title: 'Fix', decisionId: 'd', repositoryId: A.id,
-      mandate: { strength: 'explicit', policyVersion: 'v', basis: { via: 'listed' }, actor: { source: refA.sourceId, id: 'alice' }, scope: '' },
+      mandate: { strength: 'explicit', deliverable: 'change', policyVersion: 'v', basis: { via: 'listed' }, actor: { source: refA.sourceId, id: 'alice' }, scope: '' },
       channels: [], assignments: [], inputs: [], undelivered: [], createdAt: at, updatedAt: at, origin: { triggerId: 'x', triggerIds: [] },
       execution: { name: 'fix', directory: `/srv/state/work/${A.id}/fix`, assignment: '' } }
     const values = Object.fromEntries(environmentOf({ deployment, sources, settings: settings({
@@ -199,7 +199,7 @@ describe('binding lifecycle and schema', () => {
     store.threads.save({ key: threadKey(trigger.threads[0]!), ref: trigger.threads[0]!, repositoryId: A.id, createdAt: at, subscriptions: [],
       correlated: [], pending: [], meta: {} })
     store.tickets.save({ id: 't-a', title: 'Fix', decisionId: 'd', repositoryId: A.id,
-      mandate: { strength: 'explicit', policyVersion: 'v', basis: { via: 'listed' }, actor: { source: refA.sourceId, id: 'alice' }, scope: '' },
+      mandate: { strength: 'explicit', deliverable: 'change', policyVersion: 'v', basis: { via: 'listed' }, actor: { source: refA.sourceId, id: 'alice' }, scope: '' },
       channels: [], assignments: [], inputs: [], undelivered: [], createdAt: at, updatedAt: at, origin: { triggerId: trigger.id, triggerIds: [trigger.id] } })
     expect(store.db.prepare('SELECT repository_id FROM trigger WHERE id=?').get(trigger.id)).toEqual({ repository_id: A.id })
     expect(store.db.prepare('SELECT repository_id FROM thread WHERE key=?').get(threadKey(trigger.threads[0]!))).toEqual({ repository_id: A.id })

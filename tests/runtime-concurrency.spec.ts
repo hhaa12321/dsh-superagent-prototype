@@ -91,7 +91,7 @@ it('runs prepare commands in the background, side by side, while accepts, intake
   for (const trigger of first) h.runtime.receive(trigger)
   await h.runtime.idle()
   for (const [index, trigger] of first.entries()) {
-    const accepted = await h.route({ kind: 'accept', trigger_id: trigger.id, title: 'fix', worktree_name: `fix-${index}`, acknowledgement: '收到。',
+    const accepted = await h.route({ kind: 'accept', deliverable: 'change', trigger_id: trigger.id, title: 'fix', worktree_name: `fix-${index}`, acknowledgement: '收到。',
       repository_id: 'none' })
     expect(accepted).toMatchObject({ decision: 'accept', ticket: { state: 'working/queued' } })
   }
@@ -113,7 +113,7 @@ it('keeps a launch that a pause cut short queued, and finishes it once processin
   h.hooks.prepare = prepare.promise
   const trigger = feishu('1', '@bot 修一')
   h.runtime.receive(trigger); await h.runtime.idle()
-  await h.route({ kind: 'accept', trigger_id: trigger.id, title: 'fix', worktree_name: 'fix-one', acknowledgement: '收到。', repository_id: 'none' })
+  await h.route({ kind: 'accept', deliverable: 'change', trigger_id: trigger.id, title: 'fix', worktree_name: 'fix-one', acknowledgement: '收到。', repository_id: 'none' })
   await waitUntil(() => h.subprocess.spawn.mock.calls.some(([spec]) => spec.argv[0] === 'sh'))
   await h.runtime.settings.pause(true, 'panel')
   prepare.resolve(); await h.runtime.idle()
@@ -165,7 +165,7 @@ it('counts a launch under way against maxWorkers, so a bot\'s Input for an idle 
   const prepare = deferred()
   h.hooks.prepare = prepare.promise
   h.runtime.receive(feishu('5', '@bot 修二')); await h.runtime.idle()
-  await h.route({ kind: 'accept', trigger_id: feishu('5', '').id, title: 'two', worktree_name: 'fix-two', acknowledgement: '收到。', repository_id: 'none' })
+  await h.route({ kind: 'accept', deliverable: 'change', trigger_id: feishu('5', '').id, title: 'two', worktree_name: 'fix-two', acknowledgement: '收到。', repository_id: 'none' })
   await waitUntil(() => h.subprocess.spawn.mock.calls.filter(([spec]) => spec.argv[0] === 'sh').length === 2)
   h.runtime.receive(botMessage()); await h.runtime.pump()
   expect(h.runtime.store.tickets.get(one.ticket.id)!.undelivered).toHaveLength(1)
@@ -885,7 +885,7 @@ describe('the Executor\'s parts', () => {
     const settings = SettingsSchema.parse({ policy: { rules: [{ id: 'copy', name: 'Copy fixes', enabled: true,
       instruction: 'Fix typos only.' }] } })
     const ticket = { id: 'ticket-0123456789abcdef', origin: { triggerId: 'tr1', triggerIds: [] },
-      mandate: { strength: 'inferred', policyVersion: 'v1', basis: { rules: ['copy'] }, actor: { source: 'github', id: 'alice' },
+      mandate: { strength: 'inferred', deliverable: 'change', policyVersion: 'v1', basis: { rules: ['copy'] }, actor: { source: 'github', id: 'alice' },
         scope: '' } } as unknown as Ticket
     const execution = ticketExecution(ticket, { kind: 'accept', title: 'Fix', scope: 'the typo', reason: 'r', name: 'fix-typo' } as never,
       settings, '/state')
@@ -894,13 +894,20 @@ describe('the Executor\'s parts', () => {
     // The source Trigger goes with the assignment, so the text does not point at it.
     expect(execution.assignment).toContain('Scope: the typo.')
     expect(execution.assignment).not.toContain('trigger/tr1')
-    expect(ticketExecution({ ...ticket, mandate: { ...ticket.mandate, strength: 'explicit' } } as Ticket,
-      { kind: 'accept', title: 'Fix', scope: 'Fix', reason: 'r', name: 'fix-login', note: 'the login page' } as never, settings, '/state').assignment)
-      .toBe('Routing note (not the source request): the login page')
+    // Every assignment states the deliverable before the request, and an explicit one adds its routing note.
+    const explicit = ticketExecution({ ...ticket, mandate: { ...ticket.mandate, strength: 'explicit' } } as Ticket,
+      { kind: 'accept', title: 'Fix', scope: 'Fix', reason: 'r', name: 'fix-login', note: 'the login page' } as never, settings, '/state')
+    expect(explicit.assignment).toBe('Deliverable: change. Implement it and deliver the pull request the delivery requirements ask for.'
+      + '\nRouting note (not the source request): the login page')
+    // An analysis ticket's assignment says that it answers the question and changes nothing.
+    const analysis = ticketExecution({ ...ticket, mandate: { ...ticket.mandate, strength: 'explicit', deliverable: 'analysis' } } as Ticket,
+      { kind: 'accept', title: 'Inspect', scope: 'Inspect', reason: 'r', name: 'inspect' } as never, settings, '/state')
+    expect(analysis.assignment).toContain('Deliverable: analysis. Answer only the source question with the evidence it needs; change nothing')
+    expect(analysis.assignment).not.toContain('Implement it')
     // The worker's system prompt holds the limits an inferred Mandate sets, so the assignment does not repeat them.
     expect(execution.assignment).not.toContain(mandateInstructions(ticket.mandate))
     expect(execution.assignment).toContain('- Copy fixes (copy): Fix typos only.')
-    expect(mandateInstructions({ strength: 'explicit' })).toBe('')
+    expect(mandateInstructions({ strength: 'explicit', deliverable: 'change' })).toBe('')
   })
   it('renders each kind of Input as its worker reads it, inline, and no reopen Input', () => {
     const asked = { id: 'tr1', source: 'feishu', threads: [{ source: 'feishu', id: 'oc:om_1' }], actor: { source: 'feishu', id: 'ou_a' }, human: true,
@@ -932,7 +939,7 @@ describe('the Executor\'s parts', () => {
   })
   it('relays a worker\'s question, result or answer to the main Session, and keeps its progress internal', () => {
     const ticket = { id: 't1', title: 'Fix', updatedAt: '2026-09-01T00:00:00Z', attention: { id: 'a1', question: 'Which color?' }, assignments: [],
-      mandate: { strength: 'explicit' }, origin: { triggerId: 'tr1' } } as unknown as Ticket
+      mandate: { strength: 'explicit', deliverable: 'change' }, origin: { triggerId: 'tr1' } } as unknown as Ticket
     expect(reportRelay(ticket, { state: 'progress', summary: 'halfway' })).toBeUndefined()
     expect(reportRelay(ticket, { state: 'blocked', summary: 'need input', question: 'Which color?' }))
       .toMatchObject({ id: 'attention:t1:a1', text: expect.stringContaining('"kind":"worker_attention"') })

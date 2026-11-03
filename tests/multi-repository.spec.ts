@@ -62,7 +62,7 @@ function harness(settingsValue = settings()) {
     engine.receive(issue(ref, number))
     engine.evaluateDue()
     const candidate = requests.at(-1)!
-    const decision = engine.decide(candidate.triggers[0]!.id, { kind: 'accept', title: 'Fix the login', scope: 'the login form',
+    const decision = engine.decide(candidate.triggers[0]!.id, { kind: 'accept', deliverable: 'change', title: 'Fix the login', scope: 'the login form',
       reason: 'asked', name: 'fix-work', evalId: candidate.evalId })
     return repo.tickets.get(decision.ticketId!)!
   }
@@ -223,7 +223,7 @@ describe('two GitHub repository bindings in one process', () => {
     const ctx = sourceContextOf(deps, githubKind, refA.sourceId)
     // The Ticket follows PR 7 in the disabled repository; its worker is still running.
     store.tickets.save({ id: 't-a', title: 'running', decisionId: 'd', repositoryId: A.id,
-      mandate: { strength: 'explicit', policyVersion: 'v', basis: { via: 'listed' }, actor: { source: refA.sourceId, id: 'alice' }, scope: '' },
+      mandate: { strength: 'explicit', deliverable: 'change', policyVersion: 'v', basis: { via: 'listed' }, actor: { source: refA.sourceId, id: 'alice' }, scope: '' },
       channels: [], assignments: [{ id: 'a', state: 'running', createdAt: at }], inputs: [], undelivered: [], createdAt: at, updatedAt: at,
       execution: { name: 'shared-fix', directory: `/w/${A.id}/shared-fix`, assignment: '' }, follows: [{ thread: `${refA.sourceId}:7`, own: true,
         repositoryId: A.id }], origin: { triggerId: 'x', triggerIds: [] } })
@@ -281,7 +281,7 @@ describe('two GitHub repository bindings in one process', () => {
       sourceId => sourceId === refA.sourceId ? A : sourceId === refB.sourceId ? B : undefined)
     const scope = (value: typeof old) => { const sources = sourcesFor(value); sources.register(githubKind); return sources }
     const ticket = (id: string, repositoryId: string, source: string): Ticket => ({ id, title: id, decisionId: 'd', repositoryId,
-      mandate: { strength: 'explicit', policyVersion: '', basis: { via: 'listed' }, actor: { source, id: 'alice' }, scope: '' },
+      mandate: { strength: 'explicit', deliverable: 'change', policyVersion: '', basis: { via: 'listed' }, actor: { source, id: 'alice' }, scope: '' },
       channels: [], assignments: [], inputs: [], undelivered: [], createdAt: at, updatedAt: at, origin: { triggerId: 'x', triggerIds: [] } })
     const effects = policyEffects([ticket('t-a', A.id, refA.sourceId), ticket('t-b', B.id, refB.sourceId)], old, revoked, scope)
     expect([...effects.keys()]).toEqual(['t-a'])
@@ -301,7 +301,7 @@ describe('two GitHub repository bindings in one process', () => {
     // Tickets a1, a2 belong to A and b1, b2 to B, queued in that order.
     for (const [ticketId, repositoryId] of [['a1', A.id], ['a2', A.id], ['b1', B.id], ['b2', B.id]] as const) {
       store.tickets.save({ id: ticketId, title: ticketId, decisionId: 'd', repositoryId,
-        mandate: { strength: 'explicit', policyVersion: 'v', basis: { via: 'listed' }, actor: { source: refA.sourceId, id: 'alice' }, scope: '' },
+        mandate: { strength: 'explicit', deliverable: 'change', policyVersion: 'v', basis: { via: 'listed' }, actor: { source: refA.sourceId, id: 'alice' }, scope: '' },
         channels: [], assignments: [], inputs: [], undelivered: [], createdAt: at, updatedAt: at, origin: { triggerId: 'x', triggerIds: [] } })
       effects.enqueue('launch', `${ticketId}:assignment`, { ticketId, assignmentId: `${ticketId}:assignment` })
     }

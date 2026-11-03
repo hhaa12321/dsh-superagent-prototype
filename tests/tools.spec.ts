@@ -7,6 +7,7 @@ import { KV } from '../src/kv.ts'
 import { RESOURCES } from '../src/app/resources.ts'
 import { CliError, Commands } from '../src/infra/commands.ts'
 import { IM_WORDS, NOTE_WORDS } from '../src/infra/text.ts'
+import { mandateInstructions } from '../src/executor/dsh.ts'
 import { CHAT, feishu, startRuntime, type Host } from './fixtures/host.ts'
 
 let h: Host
@@ -28,7 +29,7 @@ it('reads the lists, a ticket, a decision, the settings, the prompts and the mod
   const decisions = await read('decisions') as { items: { decision_id: string; read: string }[] }
   const accepted = expect.objectContaining({ kind: 'accept', ticket_id: ticket.id, trigger_ids: [trigger.id], read: expect.stringMatching(/^decision\//) })
   expect(decisions.items).toContainEqual(accepted)
-  expect(await read(decisions.items.at(-1)!.read)).toMatchObject({ kind: 'accept', ticket_id: ticket.id, mandate: { strength: 'explicit' } })
+  expect(await read(decisions.items.at(-1)!.read)).toMatchObject({ kind: 'accept', ticket_id: ticket.id, mandate: { strength: 'explicit', deliverable: 'change' } })
   expect(await read(`ticket/${ticket.id}`)).toMatchObject({ ticket_id: ticket.id, state: 'working', directory: ticket.execution!.directory,
     trigger_id: trigger.id, assignments: { items: [expect.objectContaining({ state: 'running' })] }, assignment: `ticket/${ticket.id}/assignment` })
   // The settings name each block's revision and hold the small blocks; a block reads whole by the name a save takes.
@@ -148,7 +149,7 @@ it('routes several triggers in one call, in order, and answers a refused or fail
     { kind: 'ignore', trigger_id: thanks.id, reason: 'Thanks only.' },
     // A stop without its ticket is refused, alone.
     { kind: 'stop', trigger_id: request.id },
-    { kind: 'accept', trigger_id: request.id, title: 'Other', worktree_name: 'fix-other', acknowledgement: '收到。', repository_id: 'none' },
+    { kind: 'accept', deliverable: 'change', trigger_id: request.id, title: 'Other', worktree_name: 'fix-other', acknowledgement: '收到。', repository_id: 'none' },
     { kind: 'attach', trigger_id: other.id, ticket_id: 'no-such-ticket' },
     { kind: 'attach', trigger_id: more.id, ticket_id: ticket.id },
   ] }) as { results: Record<string, unknown>[] }
@@ -168,7 +169,7 @@ it('refuses alone an item that lacks a field its kind needs or breaks a field\'s
   for (const trigger of triggers) h.runtime.receive(trigger)
   await h.runtime.idle()
   const [a, b, c, d, e] = triggers.map(trigger => trigger.id) as [string, string, string, string, string]
-  const accept = { kind: 'accept', title: 'Fix', acknowledgement: '收到。' }
+  const accept = { kind: 'accept', deliverable: 'change', title: 'Fix', acknowledgement: '收到。' }
   const { results } = await h.runTool(h.runtime.masterId, 'orchestrator_route', { decisions: [
     { ...accept, trigger_id: a },
     { ...accept, trigger_id: b, worktree_name: 'one-two-three-four-five' },
@@ -190,7 +191,7 @@ it('refuses alone an item that lacks a field its kind needs or breaks a field\'s
 it('refuses an accept from a repository-less Trigger whose repository_id is omitted, null or empty, creating no Ticket', async () => {
   const trigger = feishu('2', '@bot 修一下标题')
   h.runtime.receive(trigger); await h.runtime.idle()
-  const accept = { kind: 'accept', trigger_id: trigger.id, title: 'Fix', worktree_name: 'fix-title', acknowledgement: '收到。' }
+  const accept = { kind: 'accept', deliverable: 'change', trigger_id: trigger.id, title: 'Fix', worktree_name: 'fix-title', acknowledgement: '收到。' }
   const { results } = await h.runTool(h.runtime.masterId, 'orchestrator_route', { decisions: [
     { ...accept },
     { ...accept, repository_id: null },
@@ -210,7 +211,7 @@ it('refuses an accept from a repository-less Trigger whose repository_id is omit
 it('accepts a repository-less Trigger as intentionally repository-less on the literal none, and stores an explicit binding ID it is given', async () => {
   const none = feishu('2', '@bot 修一下标题'), bound = feishu('3', '@bot 修一下按钮')
   h.runtime.receive(none); h.runtime.receive(bound); await h.runtime.idle()
-  const accept = (repository_id: string) => ({ kind: 'accept', title: 'Fix', worktree_name: 'fix-work', acknowledgement: '收到。', repository_id })
+  const accept = (repository_id: string) => ({ kind: 'accept', deliverable: 'change', title: 'Fix', worktree_name: 'fix-work', acknowledgement: '收到。', repository_id })
   const first = await h.route({ ...accept('none'), trigger_id: none.id }) as { ticket: { ticket_id: string } }
   expect(h.runtime.store.tickets.get(first.ticket.ticket_id)!.repositoryId).toBeNull()
   // A configured binding ID reaches the Engine unchanged and is what the Ticket stores.
@@ -255,7 +256,7 @@ it('decides a candidate\'s batch with its card\'s trigger: a second accept keeps
   h.runtime.receive(first); h.runtime.receive(second)
   await h.runtime.settings.pause(false, 'panel')
   await h.runtime.pump(); await h.runtime.idle()
-  const accept = { kind: 'accept', worktree_name: 'retitle', acknowledgement: '收到。', repository_id: 'none' }
+  const accept = { kind: 'accept', deliverable: 'change', worktree_name: 'retitle', acknowledgement: '收到。', repository_id: 'none' }
   const { results } = await h.runTool(h.runtime.masterId, 'orchestrator_route', { decisions: [
     { ...accept, trigger_id: first.id, title: 'Retitle' },
     { ...accept, trigger_id: second.id, title: 'Another title' },
@@ -299,7 +300,7 @@ it('ignores a proactive candidate from its card beside other decisions, marked s
   const { results } = await h.runTool(h.runtime.masterId, 'orchestrator_route', { decisions: [
     { kind: 'ignore', trigger_id: chat.id, reason: 'Lunch chat.' },
     { kind: 'ignore', trigger_id: thanks.id, reason: 'Thanks only.' },
-    { kind: 'accept', trigger_id: proposal.id, title: 'Shorter title', worktree_name: 'short-title', acknowledgement: '收到。', repository_id: 'none' },
+    { kind: 'accept', deliverable: 'change', trigger_id: proposal.id, title: 'Shorter title', worktree_name: 'short-title', acknowledgement: '收到。', repository_id: 'none' },
   ] }) as { results: Record<string, unknown>[] }
   expect(results).toEqual([
     { trigger_id: chat.id, kind: 'ignore', decision: 'ignore', reason: 'Ignored from its card, without a rule assessment; Lunch chat.' },
@@ -320,7 +321,7 @@ it('returns where a reply stands: sent, or dropped when its conversation can no 
 it('checks an acknowledgement against the IM word limit, not a character count', async () => {
   const trigger = feishu('1', '@bot 修一下回归')
   h.runtime.receive(trigger); await h.runtime.idle()
-  const accept = (acknowledgement: string) => h.route({ kind: 'accept', trigger_id: trigger.id, title: 'Fix', worktree_name: 'fix-regression',
+  const accept = (acknowledgement: string) => h.route({ kind: 'accept', deliverable: 'change', trigger_id: trigger.id, title: 'Fix', worktree_name: 'fix-regression',
     acknowledgement, repository_id: 'none' })
   await expect(accept(words(IM_WORDS + 1))).rejects.toThrow(`at most ${IM_WORDS} words`)
   expect(await accept(words(IM_WORDS))).toMatchObject({ decision: 'accept', ticket: { title: 'Fix' } })
@@ -444,7 +445,7 @@ it('shows a candidate with its thread\'s tickets open first, the tickets it reac
   const second = feishu('2', '@bot 另一个问题', { root_id: 'om_1' })
   h.runtime.receive(second); await h.runtime.idle()
   await handBack(second.id)
-  const b = (await h.route({ kind: 'accept', trigger_id: second.id, title: 'Other', worktree_name: 'fix-other', acknowledgement: '收到。',
+  const b = (await h.route({ kind: 'accept', deliverable: 'change', trigger_id: second.id, title: 'Other', worktree_name: 'fix-other', acknowledgement: '收到。',
     repository_id: 'none' })).ticket as
     { ticket_id: string }
   h.runtime.engine.stopTicket(b.ticket_id)
@@ -542,7 +543,7 @@ it('gives a worker the other messages of the request its ticket was accepted fro
   await h.runtime.receive(first); await h.runtime.receive(second)
   await h.runtime.settings.pause(false, 'panel')
   await h.runtime.pump(); await h.runtime.idle()
-  const accepted = await h.route({ kind: 'accept', trigger_id: second.id, title: 'Retitle', worktree_name: 'retitle', acknowledgement: '收到。',
+  const accepted = await h.route({ kind: 'accept', deliverable: 'change', trigger_id: second.id, title: 'Retitle', worktree_name: 'retitle', acknowledgement: '收到。',
     repository_id: 'none' })
   await h.runtime.idle()
   const ticket = h.runtime.store.tickets.get((accepted.ticket as { ticket_id: string }).ticket_id)!
@@ -553,4 +554,52 @@ it('gives a worker the other messages of the request its ticket was accepted fro
   const page = await h.runTool(`worker-${ticket.id}`, 'orchestrator_read', { resource: `ticket/${ticket.id}` })
   expect(page).toMatchObject({ batch: [{ trigger_id: other, read: `trigger/${other}` }] })
   expect(await h.runTool(`worker-${ticket.id}`, 'orchestrator_read', { resource: `trigger/${other}` })).toMatchObject({ trigger_id: other })
+})
+
+it('requires the deliverable on every accepted item and rejects a missing or unknown one without creating a Ticket', async () => {
+  const trigger = feishu('2', '@bot 梳理一下这个模块的架构')
+  h.runtime.receive(trigger); await h.runtime.idle()
+  const accept = { kind: 'accept', trigger_id: trigger.id, title: 'Architecture', worktree_name: 'arch-review', acknowledgement: '收到。', repository_id: 'none' }
+  const { results } = await h.runTool(h.runtime.masterId, 'orchestrator_route', { decisions: [accept, { ...accept, deliverable: 'review' }] }) as
+    { results: Record<string, unknown>[] }
+  expect(results).toEqual([
+    { trigger_id: trigger.id, kind: 'accept', refused: 'accept needs deliverable' },
+    { trigger_id: trigger.id, kind: 'accept', refused: 'deliverable: Invalid option: expected one of "change"|"analysis"' },
+  ])
+  expect(h.runtime.store.tickets.list()).toEqual([])
+  expect(h.runtime.store.triggers.disposition(trigger.id)?.decisionId).toBeUndefined()
+})
+
+it('stores an analysis deliverable, gives its worker analysis instructions and lets it report ready without a PR', async () => {
+  const trigger = feishu('2', '@bot 梳理一下这个模块的架构')
+  h.runtime.receive(trigger); await h.runtime.idle()
+  const accepted = await h.route({ kind: 'accept', deliverable: 'analysis', trigger_id: trigger.id, title: 'Architecture', worktree_name: 'arch-review',
+    acknowledgement: '收到，先梳理架构。', repository_id: 'none' })
+  await h.runtime.idle()
+  const ticket = h.runtime.store.tickets.get((accepted.ticket as { ticket_id: string }).ticket_id)!
+  expect(ticket.mandate).toMatchObject({ strength: 'explicit', deliverable: 'analysis' })
+  const sessionId = `worker-${ticket.id}`
+  // The assignment and the worker's system prompt both say what an analysis owes, and that it opens no PR.
+  expect(h.relays(sessionId)[0]!.assignment).toBe('Deliverable: analysis. Answer only the source question with the evidence it needs; change nothing and open no pull request.')
+  expect(h.runtime.store.tickets.get(ticket.id)!.mandate.deliverable).toBe('analysis')
+  expect(mandateInstructions(ticket.mandate)).toContain('answer only the source question')
+  expect(mandateInstructions(ticket.mandate)).toContain('no PR is required')
+  // The card and its decision expose the deliverable to the model.
+  expect(await read(`ticket/${ticket.id}`)).toMatchObject({ deliverable: 'analysis' })
+  const decisions = await read('decisions') as { items: { read: string }[] }
+  expect(await read(decisions.items.find(item => item.read.endsWith(ticket.decisionId))?.read ?? `decision/${ticket.decisionId}`))
+    .toMatchObject({ deliverable: 'analysis', mandate: { deliverable: 'analysis' } })
+  // Analysis completion is a ready report with the conclusion, without a PR, and the result may then go back to the person.
+  expect(await h.runTool(sessionId, 'orchestrator_report', { state: 'ready',
+    summary: 'The module has three layers; sources are docs/007. UNKNOWN: the owner of the scheduler.' })).toMatchObject({ reported: true })
+  expect(h.runtime.store.tickets.get(ticket.id)!.ended).toMatchObject({ outcome: 'completed' })
+  expect(await h.runTool(h.runtime.masterId, 'orchestrator_reply', { ticket_id: ticket.id, purpose: 'result', text: '梳理完了：三层。' }))
+    .toEqual({ status: 'sent' })
+})
+
+it('keeps the change deliverable\'s existing contract through an explicit accept', async () => {
+  const { ticket, sessionId } = await h.acceptedTicket(feishu('1', '@bot 修一下回归'))
+  expect(ticket.mandate.deliverable).toBe('change')
+  expect(h.relays(sessionId)[0]!.assignment).toContain('Deliverable: change.')
+  expect(await read(`ticket/${ticket.id}`)).toMatchObject({ deliverable: 'change' })
 })

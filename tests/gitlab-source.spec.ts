@@ -143,7 +143,7 @@ const accept = (h: Harness, trigger: Trigger, title = 'Fix the login') => {
   h.engine.evaluateDue()
   const candidate = h.engine.candidate(trigger.id)
   expect(candidate, `the Eval holding ${trigger.id}`).toBeDefined()
-  const decision = h.engine.decide(trigger.id, { kind: 'accept', title, scope: 'the login form', reason: 'asked', name: 'fix-e2e',
+  const decision = h.engine.decide(trigger.id, { kind: 'accept', deliverable: 'change', title, scope: 'the login form', reason: 'asked', name: 'fix-e2e',
     evalId: candidate!.evalId })
   return h.store.tickets.get(decision.ticketId!)!
 }

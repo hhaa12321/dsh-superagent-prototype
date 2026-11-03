@@ -161,7 +161,7 @@ function accept(h: Harness, binding: RepositoryBinding, sourceId = 'gitee-a', na
   h.engine.receive(trigger)
   h.engine.evaluateDue()
   const candidate = h.candidates.at(-1)!
-  const decision = h.engine.decide(trigger.id, { kind: 'accept', title: 'Fix the login', scope: 'the login form', reason: 'asked',
+  const decision = h.engine.decide(trigger.id, { kind: 'accept', deliverable: 'change', title: 'Fix the login', scope: 'the login form', reason: 'asked',
     name: 'fix-e2e', evalId: candidate.evalId })
   return h.store.tickets.get(decision.ticketId!)!
 }

@@ -11,7 +11,7 @@ function harness() {
   const ctx = { get: (name: string) => name === 'shellEnv' ? { register: (value: Contributor) => { contributor = value; return () => {} } } : undefined,
     agents: { get: (id: string) => agents.get(id) } }
   const ticket: Ticket = { id: 'ticket-a', title: 'Fix', decisionId: 'd', repositoryId: testRepository.id,
-    mandate: { strength: 'explicit', policyVersion: 'v', basis: { via: 'listed' }, actor: { source: 'github', id: 'alice' }, scope: '' },
+    mandate: { strength: 'explicit', deliverable: 'change', policyVersion: 'v', basis: { via: 'listed' }, actor: { source: 'github', id: 'alice' }, scope: '' },
     channels: [], assignments: [], inputs: [], undelivered: [], createdAt: '1', updatedAt: '1', origin: { triggerId: 'issue-12', triggerIds: ['issue-12'] },
     execution: { name: 'fix', directory: '/work/github:101/fix', assignment: '' } }
   const host = { ctx, ticketOfSession: (id: string) => id === 'worker-ticket-a' ? ticket : undefined,

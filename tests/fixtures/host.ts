@@ -277,7 +277,7 @@ export async function startRuntime(seed?: (store: Store) => void) {
   async function acceptedTicket(trigger: Trigger, repositoryId: string | undefined = 'github:101') {
     runtime.receive(trigger)
     await runtime.idle()
-    const result = await route({ kind: 'accept', trigger_id: trigger.id, title: `Fix ${trigger.id}`, worktree_name: 'fix-regression',
+    const result = await route({ kind: 'accept', deliverable: 'change', trigger_id: trigger.id, title: `Fix ${trigger.id}`, worktree_name: 'fix-regression',
       acknowledgement: '收到，修复回归。', ...repositoryId ? { repository_id: repositoryId } : {} })
     await runtime.idle()
     const ticket = runtime.store.tickets.get((result.ticket as { ticket_id: string }).ticket_id)!

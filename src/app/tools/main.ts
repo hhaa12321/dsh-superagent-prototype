@@ -2,8 +2,8 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { z } from 'zod'
-import { UserError, followupOwners, key, reasonText, type Decision, type DecisionKind, type EngineForMainSession, type EngineForPeople }
-  from '../../core/index.ts'
+import { UserError, followupOwners, key, reasonText, type Decision, type DecisionKind, type Deliverable, type EngineForMainSession,
+  type EngineForPeople } from '../../core/index.ts'
 import { IM_WORDS, NOTE_WORDS, wordCount } from '../../infra/text.ts'
 import { AssessmentSchema, EvalReadSchema, WorktreeNameSchema, type MasterAssessor } from '../assessment.ts'
 import { ticketCard } from '../cards.ts'
@@ -55,6 +55,8 @@ const RouteItemSchema = z.object({
   title: z.string().nullish().describe('accept: a short label of at most 200 characters describing the original request; no added requirements or implementation advice.'),
   worktree_name: z.string().nullish().describe(`accept: ${WorktreeNameSchema.description ?? ''}`),
   acknowledgement: z.string().nullish().describe(`accept: one brief sentence of at most ${IM_WORDS} words naming the concrete change and intended result in the source language. It is posted as a reply to the original source on acceptance, so do not quote the source; quote an earlier proposal briefly only when the trigger merely confirms it and the sentence does not already state it. No generic I will handle it.`),
+  // Its allowed values are checked with the item, like every other kind-specific field, so the refusal names the field.
+  deliverable: z.string().nullish().describe('accept: required, never inferred; change or analysis. change implements the request and delivers a PR; analysis answers it with evidence and changes nothing.'),
   note: z.string().nullish().describe(`accept and attach: ${RoutingNoteSchema.description ?? ''}`),
   repository_id: z.string().nullish().describe('accept: required when the Trigger has no repository binding: a configured binding ID, or none for intentionally repository-less work.'),
   clarification: z.string().nullish().describe(`clarify: one question naming the relevant binding IDs and names, at most ${IM_WORDS} words, sent once in the thread.`),
@@ -69,6 +71,7 @@ const FIELDS: Record<Field, { check: z.ZodType; reads: readonly Kind[]; needs: r
   title: { check: z.string().max(200), reads: ['accept'], needs: ['accept'] },
   worktree_name: { check: WorktreeNameSchema, reads: ['accept'], needs: ['accept'] },
   acknowledgement: { check: AcknowledgementSchema, reads: ['accept'], needs: ['accept'] },
+  deliverable: { check: z.enum(['change', 'analysis']), reads: ['accept'], needs: ['accept'] },
   note: { check: RoutingNoteSchema, reads: ['accept', 'attach'], needs: [] },
   // Whether an accept needs it depends on the Trigger, which `route` checks before the Engine sees the item.
   repository_id: { check: z.string().min(1), reads: ['accept'], needs: [] },
@@ -112,7 +115,8 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
       }
       const selected = !requested || requested === 'none' ? {} : { repositoryId: requested }
       const decision = host.engine.decide(item.trigger_id, { kind: 'accept', title: item.title!, scope: item.title!, reason: { code: 'explicitRouted' },
-        acknowledgement: item.acknowledgement!, name: item.worktree_name!, ...note, ...selected })
+        // `invalid` checked the value against the same enum, so it is one of the two deliverables here.
+        deliverable: item.deliverable as Deliverable, acknowledgement: item.acknowledgement!, name: item.worktree_name!, ...note, ...selected })
       // A Decision that created no ticket is the item's refusal; one that existed before keeps what it was accepted with.
       if (decision.kind !== 'accept' || !decision.ticketId) return { refused: `Ticket was not created: ${reasonText(decision.reason)}` }
       if (decision.id === before) {

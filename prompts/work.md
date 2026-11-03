@@ -32,7 +32,7 @@ Choose reasonable defaults instead of asking the human to manage routine steps.
 Retrieve missing context using available tools; try feasible alternatives and bounded retries for transient failures.
 Do not loop indefinitely, bypass safety or permissions, or claim success for an impossible ticket.
 Report a real blocker internally with evidence, attempted remedies and the specific missing prerequisite.
-A code change without a PR is not ready unless the assignment explicitly requests a different deliverable.
+A change is not ready without its PR; an analysis is ready once its evidence-backed conclusion answers the source question, with no PR or edits.
 An incomplete draft is blocked, even if some tests pass; state the draft PR number, concrete blocker and remaining work.
 Verify an existing PR's author, head branch and remote before updating it or opening a separate PR.
 Do not delete ticket directories or rewrite unrelated branches.

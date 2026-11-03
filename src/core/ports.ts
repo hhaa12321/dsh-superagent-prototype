@@ -1,6 +1,6 @@
 /** Ports the core depends on. Sources, policies, assessors, executors, and channels are project-specific. */
-import type { Assignment, ChannelRef, Decision, DecisionKind, Mandate, MandateBasis, Strength, Thread, Ticket, TicketEndBy, TicketOutcome, Trigger }
-  from './model.ts'
+import type { Assignment, ChannelRef, Decision, DecisionKind, Deliverable, Mandate, MandateBasis, Strength, Thread, Ticket, TicketEndBy,
+  TicketOutcome, Trigger } from './model.ts'
 import type { Reason } from './reasons.ts'
 
 /** Gate admission result: either inadmissible with a reason code, or admissible with strength and MandateBasis. */
@@ -44,9 +44,12 @@ export interface Candidate {
 export type AssessmentOutcome =
   | { kind: 'ignore'; reason: string | Reason; audit?: Record<string, unknown> }
   | { kind: 'unavailable'; reason: string | Reason; audit?: Record<string, unknown> }
-  /** An accept: `rules` the assessment matched, `name` the ticket's requested short name, and `note` a routing note for its worker. */
-  | { kind: 'accept'; title: string; scope: string; reason: string | Reason; acknowledgement?: string; rules?: string[]; audit?: Record<string, unknown>;
-    name?: string; note?: string; /** Explicit binding selected at acceptance for a repository-less request. */ repositoryId?: string }
+  /**
+   * An accept: `rules` the assessment matched, `name` the ticket's requested short name, and `note` a routing note for its
+   * worker. `deliverable` is required: an inference always produces `change`, and an explicit accept names it.
+   */
+  | { kind: 'accept'; title: string; scope: string; reason: string | Reason; deliverable: Deliverable; acknowledgement?: string; rules?: string[];
+    audit?: Record<string, unknown>; name?: string; note?: string; /** Explicit binding selected at acceptance for a repository-less request. */ repositoryId?: string }
   | { kind: 'stop'; ticketId: string; reason: string | Reason; audit?: Record<string, unknown> }
 
 /** Semantic judgement. `request` queues the assessment, idempotently per `evalId`; the outcome returns through `Engine.decide`. */

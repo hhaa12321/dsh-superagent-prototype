@@ -58,7 +58,8 @@ export function assessmentOutcome(assessment: Assessment, settings: Pick<Setting
     const proposal = { title, scope, worktree_name: name }
     return { kind: 'ignore', audit: { ...audit, would_accept: true, proposal }, reason: { code: 'observed', values: { text: assessment.reason } } }
   }
-  return { kind: 'accept', title, scope, reason: assessment.reason, ...(assessment.acknowledgement ? { acknowledgement: assessment.acknowledgement } : {}),
+  return { kind: 'accept', title, scope, reason: assessment.reason, deliverable: 'change',
+    ...(assessment.acknowledgement ? { acknowledgement: assessment.acknowledgement } : {}),
     rules: matches.map(match => match.rule_id), audit, ...(name ? { name } : {}), ...(assessment.repository_id ? { repositoryId: assessment.repository_id } : {}) }
 }
 const DEFAULT_RULES = [

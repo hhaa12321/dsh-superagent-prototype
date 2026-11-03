@@ -182,7 +182,7 @@ describe('Gitee read path', () => {
       h.engine.receive(trigger)
       h.engine.evaluateDue()
       const candidate = h.candidates.at(-1)!
-      const decision = h.engine.decide(trigger.id, { kind: 'accept', title: 'Fix the login', scope: 'the login form', reason: 'asked',
+      const decision = h.engine.decide(trigger.id, { kind: 'accept', deliverable: 'change', title: 'Fix the login', scope: 'the login form', reason: 'asked',
         evalId: candidate.evalId })
       expect(decision.kind).toBe('accept')
       const ticket = h.store.tickets.get(decision.ticketId!)!
