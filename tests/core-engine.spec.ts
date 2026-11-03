@@ -66,7 +66,7 @@ function harness(policyOverrides: Partial<Policy> = {}, { emit, prepareTicket }:
 }
 function accepted(h: ReturnType<typeof harness>, id = '1', thread = 't1') {
   h.engine.receive(trigger(id, { threads: [{ source: 'chat', id: thread }] })); h.pump()
-  const decision = h.decide(h.requests.at(-1)!, { kind: 'accept', title: 'Fix', scope: 'small', reason: 'requested', acknowledgement: 'ok' })
+  const decision = h.decide(h.requests.at(-1)!, { kind: 'accept', deliverable: 'change', title: 'Fix', scope: 'small', reason: 'requested', acknowledgement: 'ok' })
   h.settle()
   return decision
 }
@@ -116,7 +116,7 @@ describe('eval', () => {
     const h = harness()
     const decision = accepted(h)
     const ticket = h.repo.tickets.get(decision.ticketId!)!
-    expect(ticket).toMatchObject({ title: 'Fix', mandate: { strength: 'explicit', policyVersion: 'v1', basis: { via: 'listed' }, actor: member, scope: 'small' }, channels: [trigger('1').channel],
+    expect(ticket).toMatchObject({ title: 'Fix', mandate: { strength: 'explicit', deliverable: 'change', policyVersion: 'v1', basis: { via: 'listed' }, actor: member, scope: 'small' }, channels: [trigger('1').channel],
       origin: { triggerId: '1', triggerIds: ['1'] } })
     expect(ticket).not.toHaveProperty('ended')
     expect(ticket.assignments).toEqual([expect.objectContaining({ state: 'running', startedAt: expect.any(String) })])
@@ -137,7 +137,7 @@ describe('eval', () => {
     const h = harness({}, { prepareTicket: () => { throw new Error('No directory for the ticket') } })
     h.engine.receive(trigger('1')); h.pump()
     const evalId = h.requests[0]!.evalId
-    expect(() => h.decide(h.requests[0]!, { kind: 'accept', title: 'Fix', scope: 'small', reason: 'requested', acknowledgement: 'ok' })).toThrow('No directory')
+    expect(() => h.decide(h.requests[0]!, { kind: 'accept', deliverable: 'change', title: 'Fix', scope: 'small', reason: 'requested', acknowledgement: 'ok' })).toThrow('No directory')
     expect(h.repo.decisions.byThread('chat:t1')).toEqual([])
     expect(h.repo.tickets.list()).toEqual([])
     expect(h.repo.threads.get('chat:t1')).toMatchObject({ evaluating: { id: evalId }, subscriptions: [] })
@@ -147,7 +147,7 @@ describe('eval', () => {
     const h = harness()
     h.engine.receive(trigger('1')); h.pump()
     h.setVersion('v2')
-    const decision = h.decide(h.requests[0]!, { kind: 'accept', title: 'x', scope: 'x', reason: 'x' })
+    const decision = h.decide(h.requests[0]!, { kind: 'accept', deliverable: 'change', title: 'x', scope: 'x', reason: 'x' })
     expect(decision.kind).toBe('unavailable')
     expect(h.repo.tickets.list()).toEqual([])
   })
@@ -206,7 +206,7 @@ describe('subscription fan-out', () => {
   it('keeps inputs undelivered until an assignment is running, and asks to launch one whose launch failed again', () => {
     const h = harness()
     h.engine.receive(trigger('1')); h.pump()
-    const decision = h.decide(h.requests[0]!, { kind: 'accept', title: 'Fix', scope: 'small', reason: 'requested' })
+    const decision = h.decide(h.requests[0]!, { kind: 'accept', deliverable: 'change', title: 'Fix', scope: 'small', reason: 'requested' })
     h.settle({ launch: false })
     h.engine.receive(trigger('2')); h.engine.evaluateDue(); h.settle({ launch: false })
     const ticket = h.repo.tickets.get(decision.ticketId!)!
@@ -430,7 +430,7 @@ describe('hand-back', () => {
     h.engine.receive(trigger('2', { threads: [{ source: 'chat', id: 'x' }] })); h.pump()
     h.engine.attach(ticketId, '2'); h.settle()
     // Routed to the ticket, it is not new work as well.
-    expect(() => h.engine.decide('2', { kind: 'accept', title: 'Y', scope: 'small', reason: 'requested' }))
+    expect(() => h.engine.decide('2', { kind: 'accept', deliverable: 'change', title: 'Y', scope: 'small', reason: 'requested' }))
       .toThrow(new UserError('workerDecides', { tickets: ticketId }))
     expect(h.engine.handback(ticketId, '2', 'Asks for another change')).toBe(true)
     expect(h.repo.threads.get('chat:x')!.pending).toEqual(['2'])
@@ -499,7 +499,7 @@ describe('context threads and notes', () => {
   })
 })
 describe('follow-up owners', () => {
-  const accept = { kind: 'accept' as const, title: 'Y', scope: 'small', reason: 'requested' }
+  const accept = { kind: 'accept' as const, deliverable: 'change' as const, title: 'Y', scope: 'small', reason: 'requested' }
   const decides = (...tickets: string[]) => new UserError('workerDecides', { tickets: tickets.join(', ') })
   it('lets the main Session take a follow-up as new work once it stopped the ticket on it', () => {
     const h = harness()
@@ -899,20 +899,20 @@ describe('direct decisions', () => {
   it('decides an explicit request no Eval holds in a direct Eval, refuses a proactive accept without matched rules, and accepts a Trigger once', () => {
     const h = harness()
     h.engine.receive(trigger('1'))
-    const decision = h.engine.decide('1', { kind: 'accept', title: 'Fix', scope: 'small', reason: 'routed' })
+    const decision = h.engine.decide('1', { kind: 'accept', deliverable: 'change', title: 'Fix', scope: 'small', reason: 'routed' })
     expect(decision).toMatchObject({ kind: 'accept', triggerIds: ['1'], strength: 'explicit' })
     expect(h.repo.threads.get('chat:t1')).toMatchObject({ pending: [] })
     expect(h.repo.threads.get('chat:t1')).not.toHaveProperty('evaluating')
-    expect(h.engine.decide('1', { kind: 'accept', title: 'Again', scope: 'small', reason: 'routed' })).toEqual(decision)
+    expect(h.engine.decide('1', { kind: 'accept', deliverable: 'change', title: 'Again', scope: 'small', reason: 'routed' })).toEqual(decision)
     // A guest's follow-up reached that ticket without an Eval: its worker decides it, and only what the worker hands back can
     // become new work, under the gate's authority, inferred.
     h.engine.receive(trigger('2', { actor: guest })); h.pump()
     const ticketId = decision.ticketId!
-    expect(() => h.engine.decide('2', { kind: 'accept', title: 'Fix', scope: 'small', reason: 'rule', rules: ['r1'] }))
+    expect(() => h.engine.decide('2', { kind: 'accept', deliverable: 'change', title: 'Fix', scope: 'small', reason: 'rule', rules: ['r1'] }))
       .toThrow(new UserError('workerDecides', { tickets: ticketId }))
     h.engine.handback(ticketId, '2', 'A different fix')
-    expect(() => h.engine.decide('2', { kind: 'accept', title: 'Fix', scope: 'small', reason: 'proactive' })).toThrow(new UserError('notExplicit'))
-    expect(h.engine.decide('2', { kind: 'accept', title: 'Fix', scope: 'small', reason: 'rule',
+    expect(() => h.engine.decide('2', { kind: 'accept', deliverable: 'change', title: 'Fix', scope: 'small', reason: 'proactive' })).toThrow(new UserError('notExplicit'))
+    expect(h.engine.decide('2', { kind: 'accept', deliverable: 'change', title: 'Fix', scope: 'small', reason: 'rule',
       rules: ['r1'] })).toMatchObject({ kind: 'accept', strength: 'inferred' })
     expect(() => h.engine.decide('missing', { kind: 'ignore', reason: 'x' })).toThrow(new UserError('unknownTrigger'))
   })
@@ -921,8 +921,8 @@ describe('direct decisions', () => {
     accepted(h)
     h.engine.receive(trigger('2', { actor: guest })); h.engine.reevaluate('2'); h.pump()
     const candidate = h.requests.at(-1)!
-    expect(() => h.decide(candidate, { kind: 'accept', title: 'Fix', scope: 'small', reason: 'rule', rules: ['disabled'] })).toThrow(new UserError('notExplicit'))
-    expect(h.decide(candidate, { kind: 'accept', title: 'Fix', scope: 'small', reason: 'rule', rules: ['enabled'] })).toMatchObject({ kind: 'accept' })
+    expect(() => h.decide(candidate, { kind: 'accept', deliverable: 'change', title: 'Fix', scope: 'small', reason: 'rule', rules: ['disabled'] })).toThrow(new UserError('notExplicit'))
+    expect(h.decide(candidate, { kind: 'accept', deliverable: 'change', title: 'Fix', scope: 'small', reason: 'rule', rules: ['enabled'] })).toMatchObject({ kind: 'accept' })
   })
   it('ends the Eval of a replayed Trigger that started a ticket, and returns that ticket\'s Decision for it', () => {
     const h = harness()
@@ -933,7 +933,7 @@ describe('direct decisions', () => {
     expect(h.engine.candidate('1')).toBeUndefined()
     expect(h.repo.decisions.byThread('chat:t1').at(-1)).toMatchObject({ kind: 'ignore', triggerIds: ['1'],
       reason: [{ code: 'startedTicket', triggerId: '1', values: { ticket: decision.ticketId } }] })
-    expect(h.engine.decide('1', { kind: 'accept', title: 'Fix', scope: 'small', reason: 'again' })).toEqual(decision)
+    expect(h.engine.decide('1', { kind: 'accept', deliverable: 'change', title: 'Fix', scope: 'small', reason: 'again' })).toEqual(decision)
     expect(h.repo.tickets.list()).toHaveLength(1)
     expect(() => h.engine.reevaluate('missing')).toThrow(new UserError('unknownTrigger'))
   })
@@ -944,20 +944,20 @@ describe('direct decisions', () => {
     // The member's replayed request lends the guest's message no authority.
     expect(h.engine.candidate('1')).toBeUndefined()
     expect(h.engine.candidate('2')).toMatchObject({ strength: 'inferred', triggers: [{ id: '2' }] })
-    expect(() => h.engine.decide('2', { kind: 'accept', title: 'Other', scope: 'small', reason: 'routed' })).toThrow(new UserError('notExplicit'))
-    expect(h.engine.decide('1', { kind: 'accept', title: 'Fix', scope: 'small', reason: 'again' })).toEqual(decision)
+    expect(() => h.engine.decide('2', { kind: 'accept', deliverable: 'change', title: 'Other', scope: 'small', reason: 'routed' })).toThrow(new UserError('notExplicit'))
+    expect(h.engine.decide('1', { kind: 'accept', deliverable: 'change', title: 'Fix', scope: 'small', reason: 'again' })).toEqual(decision)
     expect(h.repo.tickets.list()).toHaveLength(1)
   })
   it('starts a ticket from a request accepted beside a replayed one, with its own origin and acknowledgement', () => {
     const h = harness()
     const first = accepted(h)
     h.tick(1); h.engine.receive(trigger('2')); h.engine.reevaluate('2'); h.engine.reevaluate('1'); h.pump()
-    const second = h.decide(h.requests.at(-1)!, { kind: 'accept', title: 'Other', scope: 'small', reason: 'routed', acknowledgement: 'On it' })
+    const second = h.decide(h.requests.at(-1)!, { kind: 'accept', deliverable: 'change', title: 'Other', scope: 'small', reason: 'routed', acknowledgement: 'On it' })
     expect(second.ticketId).not.toBe(first.ticketId)
     expect(h.repo.tickets.get(second.ticketId!)!.origin).toEqual({ triggerId: '2', triggerIds: ['2'] })
     expect(h.outbox.find(message => message.id === key('ack', '2'))).toMatchObject({ text: 'On it', kind: 'acknowledgement' })
     // The replayed request still answers with the ticket it started.
-    expect(h.engine.decide('1', { kind: 'accept', title: 'Again', scope: 'small', reason: 'again' })).toEqual(first)
+    expect(h.engine.decide('1', { kind: 'accept', deliverable: 'change', title: 'Again', scope: 'small', reason: 'again' })).toEqual(first)
   })
 
 })
@@ -998,7 +998,7 @@ describe('automatic input', () => {
   it('launches a failed launch again for a person\'s message, but not for a Policy change', () => {
     const h = harness()
     h.engine.receive(trigger('1')); h.pump()
-    const ticketId = h.decide(h.requests.at(-1)!, { kind: 'accept', title: 'Fix', scope: 'small', reason: 'requested' }).ticketId!
+    const ticketId = h.decide(h.requests.at(-1)!, { kind: 'accept', deliverable: 'change', title: 'Fix', scope: 'small', reason: 'requested' }).ticketId!
     h.engine.report(ticketId, { state: 'failed', summary: 'The prepare command failed' })
     vi.mocked(h.executor.start).mockClear()
     h.setVersion('v2'); h.engine.policyChanged('v1', 'v2')
@@ -1183,7 +1183,7 @@ describe('Evals across Policy versions, revoked Mandates and mixed batches', () 
     const candidate = h.requests.at(-1)!
     // An upgrade changes the version without a Policy change being reported.
     h.setVersion('v2')
-    expect(h.decide(candidate, { kind: 'accept', title: 'Fix', scope: 'small', reason: 'r' })).toMatchObject({ kind: 'unavailable', reason: [{ code: 'policyChanged' }] })
+    expect(h.decide(candidate, { kind: 'accept', deliverable: 'change', title: 'Fix', scope: 'small', reason: 'r' })).toMatchObject({ kind: 'unavailable', reason: [{ code: 'policyChanged' }] })
     expect(h.repo.threads.get('chat:t1')).toMatchObject({ pending: ['1'] })
     h.pump()
     expect(h.requests.at(-1)).toMatchObject({ policyVersion: 'v2', triggers: [expect.objectContaining({ id: '1' })] })
@@ -1215,7 +1215,7 @@ describe('Evals across Policy versions, revoked Mandates and mixed batches', () 
     h.tick(1); h.engine.receive(trigger('2', { human: false, actor: { source: 'chat', id: 'ci-bot' }, channel: { source: 'chat', thread: 'chat:t1', address: { message: 'bot' } } }))
     h.pump()
     expect(h.requests.at(-1)!.triggers.map(item => item.id)).toEqual(['1', '2'])
-    const decision = h.decide(h.requests.at(-1)!, { kind: 'accept', title: 'Fix', scope: 'small', reason: 'r', acknowledgement: 'ok' })
+    const decision = h.decide(h.requests.at(-1)!, { kind: 'accept', deliverable: 'change', title: 'Fix', scope: 'small', reason: 'r', acknowledgement: 'ok' })
     expect(h.repo.tickets.get(decision.ticketId!)!.origin).toEqual({ triggerId: '1', triggerIds: ['1', '2'] })
     expect(h.outbox).toEqual([expect.objectContaining({ id: key('ack', '1'), channel: trigger('1').channel })])
   })
@@ -1321,7 +1321,7 @@ describe('final review', () => {
     const thread = h.repo.threads.get('chat:t1')!
     h.repo.threads.save({ ...thread, evaluating: { id: 'old-eval', threadKey: 'chat:t1', triggerIds: ['1'], primary: '1', strength: 'explicit', actor: member,
       basis: { via: 'listed' }, policyVersion: 'v1', startedAt: '', deadline: '2999-01-01T00:00:00.000Z' } })
-    expect(h.engine.decide('1', { kind: 'accept', title: 'Again', scope: 'small', reason: 'replayed' })).toEqual(decision)
+    expect(h.engine.decide('1', { kind: 'accept', deliverable: 'change', title: 'Again', scope: 'small', reason: 'replayed' })).toEqual(decision)
     expect(h.repo.decisions.byThread('chat:t1').at(-1)).toMatchObject({ kind: 'ignore', reason: [{ code: 'startedTicket', triggerId: '1',
       values: { ticket: decision.ticketId } }] })
     expect(h.repo.decisions.byThread('chat:t1').some(item => item.kind === 'unavailable')).toBe(false)
@@ -1616,6 +1616,6 @@ describe('ignores from the card', () => {
     expect(h.engine.decide('4', { kind: 'ignore', reason: 'Thanks.' }).reason).toEqual([said('Thanks.')])
     // Accepting an inferred candidate still takes an assessment's matched rules.
     h.engine.receive(trigger('5', { actor: guest })); h.engine.reevaluate('5'); h.pump()
-    expect(() => h.engine.decide('5', { kind: 'accept', title: 'Fix', scope: 'small', reason: 'chat' })).toThrow(new UserError('notExplicit'))
+    expect(() => h.engine.decide('5', { kind: 'accept', deliverable: 'change', title: 'Fix', scope: 'small', reason: 'chat' })).toThrow(new UserError('notExplicit'))
   })
 })

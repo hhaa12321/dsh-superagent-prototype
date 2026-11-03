@@ -23,6 +23,30 @@ it('refuses databases newer than this build and rolls back failed atomic work', 
   store.set('schema', SCHEMA_VERSION + 1); store.close()
   expect(() => new Store(path)).toThrow('Unsupported')
 })
+it('refuses a state directory written before the deliverable schema, without reading or rewriting it', () => {
+  const path = join(directory, 'orchestrator.sqlite')
+  // A schema-13 directory from the build before Mandates carried a deliverable.
+  const db = new DatabaseSync(path)
+  db.exec('CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+  db.prepare('INSERT INTO kv VALUES (?,?)').run('schema', String(SCHEMA_VERSION - 1))
+  db.close()
+  expect(() => new Store(path)).toThrow(new RegExp(`schema ${SCHEMA_VERSION - 1} is older than schema ${SCHEMA_VERSION}.*start with a new state directory`))
+  const after = new DatabaseSync(path)
+  expect(after.prepare("SELECT value FROM kv WHERE key='schema'").get()).toEqual({ value: String(SCHEMA_VERSION - 1) })
+  expect(after.prepare("SELECT name FROM sqlite_master WHERE name='ticket'").get()).toBeUndefined()
+  after.close()
+})
+it('keeps a mandate\'s deliverable as stored, so a restart reads it back unchanged', () => {
+  const path = join(directory, 'orchestrator.sqlite')
+  const store = new Store(path)
+  store.tickets.save(ticket('t', 'open', []) as Ticket)
+  const analysis = { ...store.tickets.get('t')!, mandate: { ...store.tickets.get('t')!.mandate, deliverable: 'analysis' as const } }
+  store.tickets.save(analysis)
+  store.close()
+  const reopened = new Store(path)
+  expect(reopened.tickets.get('t')!.mandate).toMatchObject({ deliverable: 'analysis', strength: 'explicit' })
+  reopened.close()
+})
 it('finds triggers by thread', () => {
   const store = new Store(join(directory, 'orchestrator.sqlite'))
   store.triggers.save({ id: 'a', source: 'feishu', threads: [{ source: 'feishu', id: 'oc_1:om_%_x' }], actor: { source: 'feishu', id: 'u' }, human: true, at: '2', text: 'later', meta: {} })
@@ -38,7 +62,7 @@ it('finds triggers by thread', () => {
   store.close()
 })
 const ticket = (id: string, state: 'open' | 'ended', assignments: Pick<Assignment, 'state'>[], undelivered: string[] = []): Ticket => ({
-  id, title: id, decisionId: '', mandate: { strength: 'explicit', policyVersion: '', basis: { via: 'listed' }, actor: { source: 'x', id: '' }, scope: '' },
+  id, title: id, decisionId: '', mandate: { strength: 'explicit', deliverable: 'change', policyVersion: '', basis: { via: 'listed' }, actor: { source: 'x', id: '' }, scope: '' },
   channels: [], assignments: assignments.map((item, index) => ({ id: `${id}-${index}`, createdAt: '', ...item })), inputs: [],
   ...state === 'ended' ? { ended: { at: '', by: 'executor' as const, reason: 'closed', outcome: 'closed' as const } } : {},
   undelivered, createdAt: '', updatedAt: '', origin: { triggerId: '', triggerIds: [] } })

@@ -86,10 +86,15 @@ export const sourceTrigger = (host: { store: Pick<Store, 'triggers'> }, ticket: 
   host.store.triggers.get(ticket.origin.triggerId)
 
 /**
- * Returns additional system-prompt mandate instructions for a worker beyond the request: for work accepted proactively under
- * rules (`strength === 'inferred'`), restricts authorization to small internal changes within the rule scope; returns `''` for explicit requests.
+ * Returns additional system-prompt mandate instructions for a worker beyond the request. An `analysis` ticket answers the
+ * source question with evidence and changes nothing; a `change` ticket keeps the implementation and pull-request contract,
+ * with the limits of proactive authorization when `strength === 'inferred'`.
  */
-export function mandateInstructions(mandate: Pick<Mandate, 'strength'>): string {
+export function mandateInstructions(mandate: Pick<Mandate, 'strength' | 'deliverable'>): string {
+  if (mandate.deliverable === 'analysis') return 'This ticket\'s deliverable is an analysis, not a change: answer only the source question '
+    + 'with the minimum evidence it needs, separate facts from inference, name your sources, and mark missing evidence UNKNOWN. Do not '
+    + 'implement, edit, commit, push, open a PR or turn findings into follow-up work in this ticket; hand a finding that needs '
+    + 'implementation back as a new request. Report ready with the concise evidence-backed conclusion; no PR is required.'
   return mandate.strength === 'inferred' ? 'This ticket has limited proactive authorization. Independently verify that it is a small change '
     + 'internal to one module within the accepted rule scope. If it requires public-interface or behavior changes, new interaction, product '
     + 'decisions or clarification, stop and report dropped; do not expand scope.' : ''
@@ -104,10 +109,14 @@ export function ticketExecution(ticket: Ticket, outcome: Extract<AssessmentOutco
   const rules = settings.policy.rules.filter(rule => ruleIds?.includes(rule.id))
     .map(rule => `\n- ${rule.name} (${rule.id}): ${rule.instruction}`).join('')
   const precedence = rules ? `\nMatched rules; their procedure and communication instructions take precedence over the default acknowledgement and messaging policy for this ticket:${rules}` : ''
+  // Every assignment states what the ticket must produce, so the worker reads it before the source request.
+  const deliverable = `Deliverable: ${ticket.mandate.deliverable === 'analysis'
+    ? 'analysis. Answer only the source question with the evidence it needs; change nothing and open no pull request.'
+    : 'change. Implement it and deliver the pull request the delivery requirements ask for.'}`
   // The origin trigger is delivered alongside the assignment, so `assignment` omits the trigger text.
   const assignment = ticket.mandate.strength === 'inferred' && ruleIds
-    ? `Proactively accepted under ${ruleIds.join(', ')}. Scope: ${outcome.scope}.${precedence}${note}`
-    : note.trim()
+    ? `${deliverable}\nProactively accepted under ${ruleIds.join(', ')}. Scope: ${outcome.scope}.${precedence}${note}`
+    : [deliverable, note.trim()].filter(Boolean).join('\n')
   // Every workspace lives under its repository binding's namespace; a repository-less ticket has its own namespace.
   return { name, directory: join(executionRoot(settings, stateDir), repositoryNamespace(ticket.repositoryId), name), assignment }
 }

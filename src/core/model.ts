@@ -97,6 +97,11 @@ export const settled = (decision: Pick<Decision, 'kind' | 'reason'>): boolean =>
   && !decision.reason.some(reason => ['stopNotExplicit', 'stopUnknown', 'routed'].includes(reason.code))
 
 export type Strength = 'explicit' | 'inferred'
+/**
+ * What an accepted ticket must produce: `change` implements and delivers a pull request, while `analysis` answers the source
+ * question with an evidence-backed conclusion and changes nothing. It is set explicitly on accept, never inferred.
+ */
+export type Deliverable = 'change' | 'analysis'
 /** The cells of a receiving scope's row in the admission table, by whether the sender is listed and addresses the agent. */
 export type AdmissionCell = 'listedUnaddressed' | 'unlistedAddressed' | 'unlistedUnaddressed'
 /**
@@ -128,6 +133,8 @@ export type MandateBasis = Received & { sender?: string; rules?: string[] } & (
 /** Immutable authorization produced by an accept decision; execution is bounded by it and it never changes. */
 export interface Mandate {
   strength: Strength
+  /** What the ticket must produce: a code change, or an evidence-backed analysis of the source question. */
+  deliverable: Deliverable
   policyVersion: string
   /** How the gate admitted it, for re-validation and audit. */
   basis: MandateBasis

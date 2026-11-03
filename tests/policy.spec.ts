@@ -153,7 +153,7 @@ describe('admission table', () => {
     const open = withTable({ [CHAT]: { unlistedAddressed: 'explicit' } })
     const gate = setup(open).policy.gate(inChat(CHAT, STRANGER), thread(), [])
     if (!gate.admissible) throw new Error('expected admission')
-    const mandate = { strength: gate.strength, policyVersion: 'v', basis: gate.basis, actor: { source: 'feishu', id: STRANGER }, scope: '' }
+    const mandate = { strength: gate.strength, deliverable: 'change' as const, policyVersion: 'v', basis: gate.basis, actor: { source: 'feishu', id: STRANGER }, scope: '' }
     expect(setup(open).policy.revalidate(mandate)).toBe(true)
     expect(setup(withTable({ [CHAT]: { unlistedAddressed: 'inferred' } })).policy.revalidate(mandate)).toBe(false)
     expect(setup(withTable({})).policy.revalidate(mandate)).toBe(false)
@@ -197,14 +197,14 @@ describe('revalidating a Mandate from the admission table', () => {
     const observed = item.strength === 'inferred' ? { observation: { mode: 'auto' as const }, rules: ['copy'] } : {}
     const basis: MandateBasis = { via: 'admission', source: 'feishu', scope: { chatId: CHAT, direct: false, mentioned: addressed }, row: CHAT, cell: item.cell,
       ...addressed ? { addressed: 'mention' as const } : {}, ...observed }
-    const mandate = { strength: item.strength, policyVersion: 'v', basis, actor: { source: 'feishu', id: SENDER }, scope: '' }
+    const mandate = { strength: item.strength, deliverable: 'change' as const, policyVersion: 'v', basis, actor: { source: 'feishu', id: SENDER }, scope: '' }
     expect(setup(settings).policy.revalidate(mandate)).toBe(expected(item))
   })
 })
 describe('revalidate and version', () => {
   it('keeps explicit Mandates while the sender stays allowed and the Source still listens, and rule Mandates only while auto mode and the rules hold', () => {
     const basis: MandateBasis = { via: 'addressed', source: 'feishu', scope: { chatId: CHAT, direct: false }, sender: 'Alice', addressed: 'mention' }
-    const mandate = { strength: 'explicit' as const, policyVersion: 'v', basis, actor: { source: 'feishu', id: MEMBER }, scope: '' }
+    const mandate = { strength: 'explicit' as const, deliverable: 'change' as const, policyVersion: 'v', basis, actor: { source: 'feishu', id: MEMBER }, scope: '' }
     expect(policy.revalidate(mandate)).toBe(true)
     const nobody = { ...base, policy: { ...base.policy, sources: {} } }
     expect(setup(nobody).policy.revalidate(mandate)).toBe(false)
@@ -386,7 +386,7 @@ describe('bots and events without a sender', () => {
   })
   it('keeps a bot candidate\'s Mandate while the bot stays on its list and candidates may become work', () => {
     const settings = observing({ observeComments: true })
-    const mandate = { strength: 'inferred' as const, policyVersion: '', actor: comment.actor, scope: '',
+    const mandate = { strength: 'inferred' as const, deliverable: 'change' as const, policyVersion: '', actor: comment.actor, scope: '',
       basis: { via: 'bot' as const, source: 'github', scope: comment.meta, row: 'comments', sender: 'dependabot[bot]',
         observation: { mode: 'auto' as const } } }
     expect(setup(settings).policy.revalidate(mandate)).toBe(true)

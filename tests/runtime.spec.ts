@@ -133,7 +133,7 @@ async function acceptedTicket(trigger = feishu('1', '@bot 修一下回归'), rep
   await receive(trigger)
   expect(relays(runtime.masterId).some(item => item.trigger_id === trigger.id)).toBe(true)
   // A repository-less Trigger needs an explicit choice: `none` keeps the Ticket intentionally repository-less.
-  const result = await route({ kind: 'accept', trigger_id: trigger.id, title: '修复回归',
+  const result = await route({ kind: 'accept', deliverable: 'change', trigger_id: trigger.id, title: '修复回归',
     worktree_name: worktreeName, acknowledgement: '收到，修复回归。', repository_id: repositoryId ?? 'none' })
   const ticket = runtime.store.tickets.get((result.ticket as { ticket_id: string }).ticket_id)!
   return { trigger, ticket, sessionId: `worker-${ticket.id}` }
@@ -231,7 +231,7 @@ it('relays an explicit member mention as a candidate and creates the ticket, ack
   const { trigger, ticket, sessionId } = await acceptedTicket()
   const candidate = relays(runtime.masterId).find(item => item.kind === 'candidate')!
   expect(candidate).toMatchObject({ strength: 'explicit', trigger_id: trigger.id, next_action: 'Route it with orchestrator_route as dispatch says: accept, attach, stop or ignore.' })
-  expect(ticket).toMatchObject({ title: '修复回归', mandate: { strength: 'explicit', basis: expect.objectContaining({ via: 'addressed', source: 'feishu', sender: 'Alice', addressed: 'mention', scope: expect.objectContaining({ chatId: CHAT }) }) },
+  expect(ticket).toMatchObject({ title: '修复回归', mandate: { strength: 'explicit', deliverable: 'change', basis: expect.objectContaining({ via: 'addressed', source: 'feishu', sender: 'Alice', addressed: 'mention', scope: expect.objectContaining({ chatId: CHAT }) }) },
     execution: expect.objectContaining({ name: expect.stringMatching(/^fix-regression-/) }), origin: expect.objectContaining({ triggerId: trigger.id }) })
   expect(ticket).not.toHaveProperty('ended')
   expect(ticket.repositoryId).toBeNull()
@@ -247,12 +247,13 @@ it('relays an explicit member mention as a candidate and creates the ticket, ack
   expect(runtime.store.replyStatus(key('ack', trigger.id))).toBe('sent')
   const larkCalls = vi.mocked(Commands.prototype.lark).mock.calls.map(([args]) => args)
   expect(larkCalls.find(args => args[1] === '+messages-reply')).toEqual(expect.arrayContaining(['--message-id', 'om_1', '--markdown', '收到，修复回归。']))
-  // The first message holds the request itself: an explicit ticket has no assignment text beyond it, and nothing to read first.
+  // The first message holds the deliverable and the request itself: an explicit ticket has no other assignment text, and nothing to read first.
   const first = relays(sessionId)[0]!
-  expect(first).toEqual({ ticket_id: ticket.id, title: '修复回归', trigger: expect.objectContaining({ trigger_id: trigger.id, from: MEMBER,
-    thread: `feishu:${CHAT}:om_1`, text: trigger.text }) })
+  expect(first).toEqual({ ticket_id: ticket.id, title: '修复回归', assignment: ticket.execution!.assignment,
+    trigger: expect.objectContaining({ trigger_id: trigger.id, from: MEMBER, thread: `feishu:${CHAT}:om_1`, text: trigger.text }) })
+  expect(first.assignment).toBe('Deliverable: change. Implement it and deliver the pull request the delivery requirements ask for.')
   expect(first.trigger).not.toHaveProperty('read')
-  expect(await route({ kind: 'accept', trigger_id: trigger.id, title: 'again', worktree_name: worktreeName, acknowledgement: 'x',
+  expect(await route({ kind: 'accept', deliverable: 'change', trigger_id: trigger.id, title: 'again', worktree_name: worktreeName, acknowledgement: 'x',
     repository_id: 'none' })).toMatchObject({ ticket: { ticket_id: ticket.id } })
 })
 
@@ -304,9 +305,24 @@ it('assesses a proactive observation in the orchestrator Session and creates the
   const accepted = await runTool(runtime.masterId, 'orchestrator_eval_decide', decision(again.id))
   expect(accepted).toMatchObject({ decision: 'accept', ticket: { ticket_id: expect.any(String) } })
   const ticket = runtime.store.tickets.get((accepted.ticket as { ticket_id: string }).ticket_id)!
-  expect(ticket.mandate).toMatchObject({ strength: 'inferred', basis: expect.objectContaining({ via: 'admission', rules: ['copy'], observation: { mode: 'auto' } }) })
+  // Inferred proactive acceptance always produces a change, whatever the request's wording.
+  expect(ticket.mandate).toMatchObject({ strength: 'inferred', deliverable: 'change', basis: expect.objectContaining({ via: 'admission', rules: ['copy'], observation: { mode: 'auto' } }) })
   expect(runtime.store.replyStatus(key('ack', again.id))).toBeDefined()
   expect(await runTool(`worker-${ticket.id}`, 'orchestrator_read', { resource: `ticket/${ticket.id}/assignment` })).toMatchObject({ text: expect.stringContaining('Proactively accepted under copy') })
+})
+
+it('keeps each mandate\'s deliverable through a restart, so its worker still owes an analysis', async () => {
+  const analysis = feishu('40', '@bot 梳理一下这个模块的架构')
+  await receive(analysis)
+  const accepted = await route({ kind: 'accept', deliverable: 'analysis', trigger_id: analysis.id, title: 'Architecture', worktree_name: 'arch-review',
+    acknowledgement: '收到，先梳理架构。', repository_id: 'none' })
+  const ticketId = (accepted.ticket as { ticket_id: string }).ticket_id
+  expect(runtime.store.tickets.get(ticketId)!.mandate.deliverable).toBe('analysis')
+  const next = await restart()
+  await next.ready
+  // The durable mandate still says what the ticket owes, so its worker keeps the analysis contract after the restart.
+  expect(next.store.tickets.get(ticketId)!.mandate.deliverable).toBe('analysis')
+  expect(mandateInstructions(next.store.tickets.get(ticketId)!.mandate)).toContain('no PR is required')
 })
 
 it('accepts silently under a rule that says so, gives the worker the rule procedure, and closes it as dropped when nothing is left for a human', async () => {
@@ -323,7 +339,7 @@ it('accepts silently under a rule that says so, gives the worker the rule proced
   const ticket = runtime.store.tickets.get((accepted.ticket as { ticket_id: string }).ticket_id)!
   expect(runtime.store.replyStatus(key('ack', trigger.id))).toBeUndefined()
   await runtime.idle()
-  expect(sections.get(`worker-${ticket.id}`)!.text({})).toContain(mandateInstructions({ strength: 'inferred' }))
+  expect(sections.get(`worker-${ticket.id}`)!.text({})).toContain(mandateInstructions({ strength: 'inferred', deliverable: 'change' }))
   expect(await runTool(`worker-${ticket.id}`, 'orchestrator_read', { resource: `ticket/${ticket.id}/assignment` })).toMatchObject({ text: expect.stringContaining('沉默地复现和修复 (silent-bugfix): Reproduce minimally first; accept silently.') })
   await expect(runTool(runtime.masterId, 'orchestrator_reply', { ticket_id: ticket.id, purpose: 'result', text: 'x' })).rejects.toThrow('not ready')
   await runTool(`worker-${ticket.id}`, 'orchestrator_report', { state: 'blocked', summary: 'needs a decision' })
@@ -479,7 +495,7 @@ it('treats GitHub comments through the same gate: mentions by members are explic
   const mention = commentTrigger({ id: 2, body: '@agent-bot please fix', user: { login: 'alice' }, html_url: 'https://github.com/acme/widgets/pull/7#issuecomment-2', created_at: '2026-09-09T00:01:00Z' }, { number: 7, isPr: true }, 'conversation', 'agent-bot', githubRef)
   await receive(mention)
   expect(relays(runtime.masterId).at(-1)).toMatchObject({ kind: 'candidate', strength: 'explicit', trigger_id: mention.id })
-  const result = await route({ kind: 'accept', trigger_id: mention.id, title: 'Fix PR 7', worktree_name: 'fix-pr', acknowledgement: 'On it: fixing the review finding.' })
+  const result = await route({ kind: 'accept', deliverable: 'change', trigger_id: mention.id, title: 'Fix PR 7', worktree_name: 'fix-pr', acknowledgement: 'On it: fixing the review finding.' })
   const ticket = runtime.store.tickets.get((result.ticket as { ticket_id: string }).ticket_id)!
   expect(ticket.channels).toEqual([expect.objectContaining({ source: 'github', address: expect.objectContaining({ number: '7' }) })])
   // The PR's head is a variable of the ticket's execution environment; a prepare command may fetch it.
@@ -559,7 +575,7 @@ it('projects read models for the management page and removes thread subscription
   expect(overviewOf(runtime)).toMatchObject({ person: [], executor: { queued: 0, maxWorkers: 3, idle: 0 }, flow: { received: 0, accepted: 0, judged: 0 } })
   expect(ticketList(viewsOf(runtime), 'working', 0, 20).items).toEqual([expect.objectContaining({ id: ticket.id, stage: 'working' })])
   expect(ticketList(viewsOf(runtime), 'open', 0, 20).items).toEqual([expect.objectContaining({ id: ticket.id, stage: 'working', sessionId: `worker-${ticket.id}`, strength: 'explicit' })])
-  expect(ticketDetail(viewsOf(runtime), ticket.id)).toMatchObject({ mandate: { strength: 'explicit' }, decision: { kind: 'accept' }, threads: [expect.objectContaining({ key: threadKeyValue, title: '@bot 修一下回归' })], channels: [expect.objectContaining({ source: 'feishu' })] })
+  expect(ticketDetail(viewsOf(runtime), ticket.id)).toMatchObject({ mandate: { strength: 'explicit', deliverable: 'change' }, decision: { kind: 'accept' }, threads: [expect.objectContaining({ key: threadKeyValue, title: '@bot 修一下回归' })], channels: [expect.objectContaining({ source: 'feishu' })] })
   const follow = feishu('20', '补充：日志在这里', { mentions: [], root_id: 'om_1', sender_id: 'ou_guest' })
   await receive(follow)
   expect(threadList(viewsOf(runtime), 'subscribed', 0, 20).items).toEqual([expect.objectContaining({ key: threadKeyValue, lastAt: follow.at, tickets: [{ id: ticket.id, title: '修复回归', state: 'open' }] })])
@@ -637,7 +653,7 @@ it('records each settings save with its policy change and the open tickets told 
 it('refuses an accept through orchestrator_route for inferred candidates so proactive work always goes through Eval', async () => {
   const observed = feishu('21', '这个文案好奇怪，改成“浏览网页”吧', { mentions: [] })
   await receive(observed)
-  await expect(route({ kind: 'accept', trigger_id: observed.id, title: 'x', worktree_name: 'copy-fix', acknowledgement: 'x', repository_id: 'none' }))
+  await expect(route({ kind: 'accept', deliverable: 'change', trigger_id: observed.id, title: 'x', worktree_name: 'copy-fix', acknowledgement: 'x', repository_id: 'none' }))
     .rejects.toThrow('explicit requests from allowed senders')
   expect(runtime.store.tickets.list()).toEqual([])
 })
@@ -1592,7 +1608,7 @@ it('refuses an ended ticket\'s worker its tools, and restricts the main Session 
 it('gives an explicit ticket\'s worker a prompt without the limits of an inferred Mandate', async () => {
   const { sessionId } = await acceptedTicket()
   await runtime.idle()
-  expect(sections.get(sessionId)!.text({})).not.toContain(mandateInstructions({ strength: 'inferred' }))
+  expect(sections.get(sessionId)!.text({})).not.toContain(mandateInstructions({ strength: 'inferred', deliverable: 'change' }))
 })
 
 it('runs a launch that fails for a passing reason again on the launch backoff three times, then fails its ticket; a failed prepare fails at once', async () => {
