@@ -132,8 +132,9 @@ async function route(item: Record<string, unknown>): Promise<Record<string, unkn
 async function acceptedTicket(trigger = feishu('1', '@bot 修一下回归'), repositoryId?: string) {
   await receive(trigger)
   expect(relays(runtime.masterId).some(item => item.trigger_id === trigger.id)).toBe(true)
+  // A repository-less Trigger needs an explicit choice: `none` keeps the Ticket intentionally repository-less.
   const result = await route({ kind: 'accept', trigger_id: trigger.id, title: '修复回归',
-    worktree_name: worktreeName, acknowledgement: '收到，修复回归。', ...repositoryId ? { repository_id: repositoryId } : {} })
+    worktree_name: worktreeName, acknowledgement: '收到，修复回归。', repository_id: repositoryId ?? 'none' })
   const ticket = runtime.store.tickets.get((result.ticket as { ticket_id: string }).ticket_id)!
   return { trigger, ticket, sessionId: `worker-${ticket.id}` }
 }
@@ -251,7 +252,8 @@ it('relays an explicit member mention as a candidate and creates the ticket, ack
   expect(first).toEqual({ ticket_id: ticket.id, title: '修复回归', trigger: expect.objectContaining({ trigger_id: trigger.id, from: MEMBER,
     thread: `feishu:${CHAT}:om_1`, text: trigger.text }) })
   expect(first.trigger).not.toHaveProperty('read')
-  expect(await route({ kind: 'accept', trigger_id: trigger.id, title: 'again', worktree_name: worktreeName, acknowledgement: 'x' })).toMatchObject({ ticket: { ticket_id: ticket.id } })
+  expect(await route({ kind: 'accept', trigger_id: trigger.id, title: 'again', worktree_name: worktreeName, acknowledgement: 'x',
+    repository_id: 'none' })).toMatchObject({ ticket: { ticket_id: ticket.id } })
 })
 
 it('fans a person\'s later thread message out to the live worker as context and tells the orchestrator, without an Eval', async () => {
@@ -635,7 +637,8 @@ it('records each settings save with its policy change and the open tickets told 
 it('refuses an accept through orchestrator_route for inferred candidates so proactive work always goes through Eval', async () => {
   const observed = feishu('21', '这个文案好奇怪，改成“浏览网页”吧', { mentions: [] })
   await receive(observed)
-  await expect(route({ kind: 'accept', trigger_id: observed.id, title: 'x', worktree_name: 'copy-fix', acknowledgement: 'x' })).rejects.toThrow('explicit requests from allowed senders')
+  await expect(route({ kind: 'accept', trigger_id: observed.id, title: 'x', worktree_name: 'copy-fix', acknowledgement: 'x', repository_id: 'none' }))
+    .rejects.toThrow('explicit requests from allowed senders')
   expect(runtime.store.tickets.list()).toEqual([])
 })
 
