@@ -98,8 +98,11 @@ function MandateDetails({ ticket, actor }: { ticket: TicketPageView; actor: stri
   ] : []
   const version = <button type="button" className="dt-textlink dt-mono" onClick={() => navigate(settingsRoute('eval',
     { version: mandate.policyVersion }))}>{mandate.policyVersion.slice(0, 8)}</button>
+  const budget = ticket.budget
   return <Section title={t('mandateDetails')} icon="shield">
     <KeyValues rows={[...rows, [t('term.scope'), legacy ? t('legacyScopeShort') : mandate.scope || t('empty')],
+      [t('ticketBudgetLabel'), t('ticketBudgetValue', { used: String(budget.used), soft: String(budget.soft), hard: String(budget.hard),
+        status: valueLabel(t, 'budget', budget.status) })],
       ...facts.map((item): [string, string] => [valueLabel(t, 'basis', item.name), fact(item)]),
       ...legacy ? [] : [[t('policyVersion'), version] as [string, ReactNode]]]} />
   </Section>

@@ -1,6 +1,7 @@
 /** Tickets: their lifecycle from an accept to their end, their Subscriptions and their Inputs. */
 import { key } from './ids.ts'
 import { UserError } from './errors.ts'
+import { countStep, freshBudget, retryBudget, stateOf, type StepOutcome } from './budget.ts'
 import { latestAssignment, latestReport, liveTicket, readUntil, runningAssignment, settled, threadKey, waitsForPerson } from './model.ts'
 import type { Assignment, ChannelRef, Evaluation, Follow, Mandate, PolicyEffect, ThreadRef, Ticket, TicketEndBy, TicketInput, TicketOutcome,
   Trigger, TriggerDisposition } from './model.ts'
@@ -57,7 +58,7 @@ export class Tickets extends EnginePart {
       }
     }
     let ticket: Ticket = { id, title: outcome.title, decisionId, repositoryId, mandate, channels: [], assignments: [], inputs: [], undelivered: [],
-      createdAt: at, updatedAt: at, origin }
+      createdAt: at, updatedAt: at, origin, budget: freshBudget() }
     for (const triggerId of triggerIds) {
       const channel = this.repo.triggers.get(triggerId)?.channel
       if (channel && !ticket.channels.some(item => sameChannel(item, channel))) ticket.channels.push(channel)
@@ -187,7 +188,8 @@ export class Tickets extends EnginePart {
     return this.require(ticketId)
   }
   /**
-   * Ends the stalled assignment of a retryable open ticket (`failed`, `blocked`, or failed input delivery) and starts a new one.
+   * Ends the stalled assignment of a retryable open ticket (`failed`, `blocked`, or failed input delivery) and starts a new one,
+   * with one fresh step budget epoch: this, and nothing automatic, resets the worker's budget.
    * @throws UserError when the ticket is unknown or not retryable.
    */
   retry(ticketId: string): Ticket {
@@ -196,6 +198,7 @@ export class Tickets extends EnginePart {
     if (!canRetry(ticket) || !latest) throw new UserError('notRetryable')
     this.endAssignment(ticket, latest, 'retried')
     this.requeueUntaken(ticket, latest)
+    ticket.budget = retryBudget(ticket.budget)
     const assignment = this.newAssignment(ticket)
     ticket.updatedAt = this.now()
     this.repo.tickets.save(ticket)
@@ -401,6 +404,19 @@ export class Tickets extends EnginePart {
     const report = latest?.report
     const later = ticket.inputs.some(input => input.kind !== 'policy-changed' && Date.parse(input.at) > Date.parse(report?.at ?? ''))
     return report?.state !== 'ready' || ticket.undelivered.length > 0 || later
+  }
+  /**
+   * Count the worker step at Session sequence `seq` on the ticket's durable budget, once, and report what the step reached.
+   * A replayed or duplicate sequence number changes nothing. Nothing but `retry` starts a fresh epoch.
+   * @throws UserError when the ticket is unknown.
+   */
+  stepped(ticketId: string, seq: number): StepOutcome {
+    const ticket = this.require(ticketId)
+    const result = countStep(ticket.budget, ticket.mandate.deliverable, seq)
+    // A duplicate sequence number, and a step after the hard stop of the same epoch, only record the watermark. The budget is
+    // bookkeeping, so it does not restamp the Ticket's own last change.
+    if (result.changed) { ticket.budget = result.budget; this.repo.tickets.save(ticket) }
+    return { state: stateOf(result.budget, ticket.mandate.deliverable), counted: result.counted, checkpoint: result.checkpoint, blocked: result.blocked }
   }
   /** Add a pending Assignment; a failed delivery to the one before it no longer concerns the ticket. */
   private newAssignment(ticket: Ticket): Assignment {

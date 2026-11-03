@@ -226,7 +226,7 @@ describe('two GitHub repository bindings in one process', () => {
       mandate: { strength: 'explicit', deliverable: 'change', policyVersion: 'v', basis: { via: 'listed' }, actor: { source: refA.sourceId, id: 'alice' }, scope: '' },
       channels: [], assignments: [{ id: 'a', state: 'running', createdAt: at }], inputs: [], undelivered: [], createdAt: at, updatedAt: at,
       execution: { name: 'shared-fix', directory: `/w/${A.id}/shared-fix`, assignment: '' }, follows: [{ thread: `${refA.sourceId}:7`, own: true,
-        repositoryId: A.id }], origin: { triggerId: 'x', triggerIds: [] } })
+        repositoryId: A.id }], budget: { used: 0, lastSeq: -1, epoch: 1, status: 'ok' }, origin: { triggerId: 'x', triggerIds: [] } })
     store.threads.save({ key: `${refA.sourceId}:7`, ref: { source: refA.sourceId, id: '7', repositoryId: A.id }, repositoryId: A.id, createdAt: at,
       subscriptions: ['t-a'], correlated: [], pending: [], meta: { isPr: true, title: 'Fix', number: 7 } })
     const seen: string[] = []
@@ -282,7 +282,7 @@ describe('two GitHub repository bindings in one process', () => {
     const scope = (value: typeof old) => { const sources = sourcesFor(value); sources.register(githubKind); return sources }
     const ticket = (id: string, repositoryId: string, source: string): Ticket => ({ id, title: id, decisionId: 'd', repositoryId,
       mandate: { strength: 'explicit', deliverable: 'change', policyVersion: '', basis: { via: 'listed' }, actor: { source, id: 'alice' }, scope: '' },
-      channels: [], assignments: [], inputs: [], undelivered: [], createdAt: at, updatedAt: at, origin: { triggerId: 'x', triggerIds: [] } })
+      channels: [], assignments: [], inputs: [], undelivered: [], createdAt: at, updatedAt: at, budget: { used: 0, lastSeq: -1, epoch: 1, status: 'ok' }, origin: { triggerId: 'x', triggerIds: [] } })
     const effects = policyEffects([ticket('t-a', A.id, refA.sourceId), ticket('t-b', B.id, refB.sourceId)], old, revoked, scope)
     expect([...effects.keys()]).toEqual(['t-a'])
     expect(effects.get('t-a')).toMatchObject({ requesterAllowed: false })
@@ -302,7 +302,7 @@ describe('two GitHub repository bindings in one process', () => {
     for (const [ticketId, repositoryId] of [['a1', A.id], ['a2', A.id], ['b1', B.id], ['b2', B.id]] as const) {
       store.tickets.save({ id: ticketId, title: ticketId, decisionId: 'd', repositoryId,
         mandate: { strength: 'explicit', deliverable: 'change', policyVersion: 'v', basis: { via: 'listed' }, actor: { source: refA.sourceId, id: 'alice' }, scope: '' },
-        channels: [], assignments: [], inputs: [], undelivered: [], createdAt: at, updatedAt: at, origin: { triggerId: 'x', triggerIds: [] } })
+        channels: [], assignments: [], inputs: [], undelivered: [], createdAt: at, updatedAt: at, budget: { used: 0, lastSeq: -1, epoch: 1, status: 'ok' }, origin: { triggerId: 'x', triggerIds: [] } })
       effects.enqueue('launch', `${ticketId}:assignment`, { ticketId, assignmentId: `${ticketId}:assignment` })
     }
     try {

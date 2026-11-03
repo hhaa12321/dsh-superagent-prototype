@@ -93,12 +93,17 @@ export class Assignments extends EnginePart {
   /**
    * Records a worker status report on an open ticket's current assignment, updating `attention`, `answers`, held automated
    * inputs, and ending the ticket when `dropped` or when `ready` and not waiting on followed threads (`followsDone`).
-   * @throws UserError for an unknown or ended ticket, an ended assignment, a question combined with a ready result or answer,
-   * or a question/answer referencing a non-human or unreached trigger.
+   * @throws UserError for an unknown or ended ticket, an ended assignment, any report that would replace a hard stop's
+   * `blocked` one in the same budget epoch, a question combined with a ready result or answer, or a question/answer
+   * referencing a non-human or unreached trigger.
    */
   report(ticketId: string, report: WorkerReport): Ticket {
     const ticket = this.require(ticketId)
     if (!liveTicket(ticket)) throw new UserError('ticketEnded')
+    // A step that reached the hard limit is cancelled, but its last tool calls may still land. The budget is durable domain
+    // state, so the current Assignment keeps its blocked report until a person's retry resets the budget: no later report of
+    // that epoch may replace it with a result, a wait, a failure or progress, whatever the cancellation timing.
+    if (ticket.budget.status === 'blocked' && report.state !== 'blocked') throw new UserError('budgetExhausted')
     if (report.question && (report.state === 'ready' || report.answers)) throw new UserError('questionWithResult')
     if (report.askedBy && !report.question) throw new UserError('askerWithoutQuestion')
     const person = (id: string, channel: boolean) => {

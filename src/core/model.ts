@@ -280,6 +280,26 @@ export interface PolicyEffect {
   requester?: ActorRef
 }
 
+/**
+ * A worker's step budget state: it became `checkpoint` at the soft limit, where its worker got the one steering prompt,
+ * and `blocked` at the hard limit, where it was stopped. `epoch` counts explicit retries.
+ */
+export type BudgetStatus = 'ok' | 'checkpoint' | 'blocked'
+/**
+ * The durable step budget of a Ticket's worker: the steps counted so far, the Session sequence watermark that counts each
+ * `step/start` once, the epoch an explicit retry increments, and the status. The epoch survives nothing but a retry that
+ * starts a new one; every assignment the Executor starts, automatic restart and ordinary input delivery keep it.
+ */
+export interface StepBudget {
+  /** Worker steps counted in this epoch. */
+  used: number
+  /** The highest counted Session sequence number; a replayed or duplicate event is at or below it. */
+  lastSeq: number
+  /** The explicit-retry epoch; only `retryTicket` starts a new one. */
+  epoch: number
+  status: BudgetStatus
+}
+
 export type TicketEndBy = 'executor' | 'human'
 /** How a ticket ended: with its result, with its pull request merged or closed unmerged, with nothing to do, or stopped by a person. */
 export type TicketOutcome = 'completed' | 'merged' | 'closed' | 'dropped' | 'stopped'
@@ -317,6 +337,8 @@ export interface Ticket {
   origin: { triggerId: string; triggerIds: string[] }
   /** What its Executor chose: its short name, directory and assignment text. */
   execution?: Execution
+  /** Its worker's durable step budget, which its Mandate's deliverable sets the limits of (see `budget.ts`). */
+  budget: StepBudget
   /** The latest failed delivery of an Input to its worker, until a delivery succeeds. */
   delivery?: { error: string; at: string }
 }

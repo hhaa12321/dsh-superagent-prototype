@@ -117,6 +117,27 @@ Threads followed only for context still deliver messages, but do not give the Ti
 
 Sources poll subscribed Threads while a live Ticket subscribes, and for two weeks after the later of the last Trigger and the subscribing Tickets' end. Afterwards, messages arrive only through ordinary intake: GitHub notifications or Feishu live events.
 
+## Worker step budget
+
+A Ticket's worker has a fixed step budget, so a broad analysis cannot keep opening new investigations forever. The limits
+come from the Mandate's persisted deliverable and are not configurable: `analysis` gets a soft checkpoint at 30 steps and a
+hard stop at 50, and `change` at 120 and 180. A step is one DSH `step/start`, a model call plus the tools it asked for; a
+long build or test uses none, so no wall-clock deadline applies.
+
+The count is durable on the Ticket: the steps used, the Session sequence number of the last counted step, the epoch, and
+the status. Each `step/start` counts once while it has a higher sequence number than the watermark, so a replay, a repeated
+event or a host restart counts nothing twice, and only the Ticket's live Assignment counts. At the soft limit the worker
+gets one steering prompt, keyed to the epoch: stop expanding scope, synthesize what is already known, mark missing facts
+`UNKNOWN` and report promptly. For an `analysis` this means no new work; for a `change` it narrows to finishing the current
+verified change. At the hard limit the Ticket records a `blocked` Report naming the deliverable, the steps used and the
+limit, and the worker's turn and background work stop. The Ticket stays open and retryable; a person's explicit retry
+starts one fresh epoch, while an automatic restart, a transient retry or an ordinary Input delivery does not.
+
+That blocked Report is the epoch's last word. While the budget is `blocked`, the domain refuses any other Report on the
+Ticket and the Executor records no `waiting` or `failed` one of its own, so a tool call of the cancelled step that still
+lands, or a turn that goes idle, cannot turn the hard stop into a result, a wait, a failure or progress, whatever order
+they ran in. Only the retry, which resets the budget, accepts Reports again.
+
 ## Failure and recovery
 
 ### Executor blocked or failed
