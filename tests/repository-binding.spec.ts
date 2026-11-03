@@ -15,7 +15,7 @@ import { claimPull, type Pull } from '../src/sources/github-pull.ts'
 import type { SourceContext } from '../src/sources/host.ts'
 import { Commands } from '../src/infra/commands.ts'
 import { ticketExecution } from '../src/executor/dsh.ts'
-import { repositoryId, type RepositoryBinding } from '../src/repository.ts'
+import { repositoryId, repositoryNamespace, type RepositoryBinding } from '../src/repository.ts'
 import { githubKind } from '../src/sources/github.ts'
 import { HealthBoard } from '../src/infra/health.ts'
 import { testCommands, testDeployment, testRepository } from './fixtures/deployment.ts'
@@ -82,9 +82,9 @@ describe('repository binding identity', () => {
     const ticketA = h.accept(refA, 12), ticketB = h.accept(refB, 12)
     expect(ticketA.id).not.toBe(ticketB.id)
     expect([ticketA.repositoryId, ticketB.repositoryId]).toEqual([A.id, B.id])
-    expect(ticketA.execution!.directory).toBe(`/srv/state/work/${A.id}/${ticketA.execution!.name}`)
-    expect(ticketB.execution!.directory).toBe(`/srv/state/work/${B.id}/${ticketB.execution!.name}`)
-    expect(ticketA.execution!.directory).not.toContain(B.id)
+    expect(ticketA.execution!.directory).toBe(`/srv/state/work/${repositoryNamespace(A.id)}/${ticketA.execution!.name}`)
+    expect(ticketB.execution!.directory).toBe(`/srv/state/work/${repositoryNamespace(B.id)}/${ticketB.execution!.name}`)
+    expect(ticketA.execution!.directory).not.toContain(repositoryNamespace(B.id))
     // Cursors and health entries are namespaced too, though both native numbers are 12.
     const cursorA = KV.github.cursor(refA.sourceId, A.id, 12), cursorB = KV.github.cursor(refB.sourceId, B.id, 12)
     expect(cursorA).not.toBe(cursorB)
@@ -248,7 +248,7 @@ describe('fresh state and resume', () => {
     const resumed = reopened.tickets.get(ticket.id)!
     expect(resumed.repositoryId).toBe(A.id)
     expect(resumed.execution!.directory).toBe(ticket.execution!.directory)
-    expect(resumed.execution!.directory.startsWith(join('/srv/state', 'work', A.id))).toBe(true)
+    expect(resumed.execution!.directory.startsWith(join('/srv/state', 'work', repositoryNamespace(A.id)))).toBe(true)
     // Tool and environment context resolve through the persisted binding, not a process-global repository.
     const sources = new SourceRegistry(() => settings({ sources: { [refA.sourceId]: { kind: 'github', enabled: true,
       config: { repository: A.slug, cli: '/bin/false' } } } }), new HealthBoard(), undefined, sourceId => sourceId === refA.sourceId ? A : undefined)
@@ -267,5 +267,22 @@ describe('fresh state and resume', () => {
     await commands.api('issues/12')
     expect(run).toHaveBeenCalledWith('/bin/false', ['api', `repos/${A.slug}/issues/12`])
     reopened.close()
+  })
+})
+
+describe('repository namespace', () => {
+  it('names a workspace directory without the binding ID\'s path delimiter, and never merges two bindings', () => {
+    // A binding ID is `<provider>:<providerRepositoryId>`. No tool may see that colon as a path delimiter, so the
+    // namespace is a path-safe projection; the binding's identity still travels in DSH_SUPERAGENT_REPOSITORY_ID.
+    expect(repositoryNamespace(repositoryId('github', 1441512157))).toBe('github+1441512157')
+    expect(repositoryNamespace(repositoryId('gitlab', 'group/project'))).toBe('gitlab+group/project')
+    expect(repositoryNamespace('gitee:45499062')).not.toContain(':')
+    // A repository-less Ticket keeps its own namespace, and the empty string cannot pass for one.
+    expect(repositoryNamespace(null)).toBe('_no-repository')
+    expect(repositoryNamespace(undefined)).toBe('_no-repository')
+    expect(repositoryNamespace('')).toBe('_no-repository')
+    // The separator is outside both the provider and the provider repository ID alphabets, so the mapping is injective.
+    const ids = [repositoryId('github', 101), repositoryId('github-beta', '101'), repositoryId('gitlab', '101'), 'github:101+2']
+    expect(new Set(ids.map(id => repositoryNamespace(id))).size).toBe(ids.length)
   })
 })

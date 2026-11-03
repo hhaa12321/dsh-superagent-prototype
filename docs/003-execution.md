@@ -22,7 +22,7 @@ An `idle` Ticket has finished its turn without an outstanding question. A Trigge
 
 ## The Executor
 
-Each Ticket gets an Executor Session named `worker-<ticket id>` and a directory named after the Ticket's short name. Directories are created under the configured execution root, which defaults to `<stateDir>/work`, and then under the Ticket's repository binding ID: `<executionRoot>/<repositoryId>/<ticket name>`. A Ticket with no repository binding uses the `_no-repository` namespace.
+Each Ticket gets an Executor Session named `worker-<ticket id>` and a directory named after the Ticket's short name. Directories are created under the configured execution root, which defaults to `<stateDir>/work`, and then under the Ticket's repository binding ID with its `:` replaced by `+`: `<executionRoot>/<provider>+<providerRepositoryId>/<ticket name>`, such as `github+1441512157`. The colon is a path delimiter to many tools: pnpm drops `node_modules/.bin` from `PATH` in a directory that contains one, and some test runners cut the path there. The namespace is a projection for the filesystem only; `DSH_SUPERAGENT_REPOSITORY_ID` carries the binding's real identity. A Ticket with no repository binding uses the `_no-repository` namespace.
 
 Executor Sessions run commands without approval as the operator's OS user. Their `dsh-superagent-worker` preset contains the tools needed for work and moves foreground shell commands to background jobs after 5 seconds. This lets a worker receive new messages at the next step instead of waiting for a long command to finish.
 

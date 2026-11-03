@@ -122,7 +122,7 @@ The existing dependencies are sufficient for the first Gitee adapter: Node 22's 
 Every Ticket workspace lives under a binding-specific namespace, for example:
 
 ```text
-<stateDir>/work/<repositoryId>/<ticket-name>
+<stateDir>/work/<provider>+<providerRepositoryId>/<ticket-name>
 ```
 
 The clone remote and local Git configuration are established from that binding. A worker receives only the credential helper or protected file handle it needs for its Ticket. Credentials for different bindings must not be merged into one global git config.
