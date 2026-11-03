@@ -37,4 +37,12 @@ export const githubCredentialId = (sourceId: string): string => forgeCredentialI
 
 /** Namespace of a ticket's workspace: a repository-bound ticket lives under its repository ID. */
 export const NO_REPOSITORY = '_no-repository'
-export const repositoryNamespace = (repositoryIdValue: string | null | undefined): string => repositoryIdValue ?? NO_REPOSITORY
+/**
+ * The directory name a repository's tickets live under. A binding ID reads `<provider>:<providerRepositoryId>`, and a
+ * colon is a path delimiter to many tools: pnpm then drops `node_modules/.bin` from `PATH`, and some test runners cut
+ * the path at the colon. The namespace replaces that character with `+`, which neither a provider nor a provider
+ * repository ID may contain, so distinct bindings never share a namespace. It stays a stable, readable projection of
+ * the binding, never the binding's identity, which `DSH_SUPERAGENT_REPOSITORY_ID` carries.
+ */
+export const repositoryNamespace = (repositoryIdValue: string | null | undefined): string =>
+  repositoryIdValue ? repositoryIdValue.replaceAll(':', '+') : NO_REPOSITORY

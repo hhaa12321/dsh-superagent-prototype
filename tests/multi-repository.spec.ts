@@ -17,7 +17,7 @@ import { HealthBoard } from '../src/infra/health.ts'
 import { issueTrigger, type GithubRef } from '../src/sources/github-trigger.ts'
 import { claimPull, type Pull } from '../src/sources/github-pull.ts'
 import { githubKind, pollWhenEnabled } from '../src/sources/github.ts'
-import { repositoryId, type RepositoryBinding } from '../src/repository.ts'
+import { repositoryId, repositoryNamespace, type RepositoryBinding } from '../src/repository.ts'
 import { ticketExecution } from '../src/executor/dsh.ts'
 import { environmentOf } from '../src/app/execution-environment.ts'
 import { Effects } from '../src/app/effects.ts'
@@ -146,9 +146,9 @@ describe('two GitHub repository bindings in one process', () => {
     const ticketA = h.accept(refA, 12), ticketB = h.accept(refB, 12)
     // One started worker per Ticket, each carrying its own binding and workspace namespace.
     expect(h.starts.map(ticket => ticket.repositoryId)).toEqual([A.id, B.id])
-    expect(ticketA.execution!.directory).toBe(`/srv/state/work/${A.id}/fix-work-${ticketA.id.slice(0, 12)}`)
-    expect(ticketB.execution!.directory).toBe(`/srv/state/work/${B.id}/fix-work-${ticketB.id.slice(0, 12)}`)
-    expect(ticketA.execution!.directory).not.toContain(B.id)
+    expect(ticketA.execution!.directory).toBe(`/srv/state/work/${repositoryNamespace(A.id)}/fix-work-${ticketA.id.slice(0, 12)}`)
+    expect(ticketB.execution!.directory).toBe(`/srv/state/work/${repositoryNamespace(B.id)}/fix-work-${ticketB.id.slice(0, 12)}`)
+    expect(ticketA.execution!.directory).not.toContain(repositoryNamespace(B.id))
     expect(ticketA.execution!.name).not.toBe(ticketB.execution!.name)
     // Identical branch suffixes and PR numbers are still per-binding: give both tickets one branch name.
     const branch = 'agent/shared-fix'
@@ -350,8 +350,8 @@ describe('two GitHub repository bindings in one process', () => {
       expect(reopened.get(KV.github.since(refB.sourceId, B.id))).toBe(at)
       const restoredA = reopened.tickets.get(ticketA.id)!, restoredB = reopened.tickets.get(ticketB.id)!
       expect([restoredA.repositoryId, restoredB.repositoryId]).toEqual([A.id, B.id])
-      expect(restoredA.execution!.directory.startsWith(join('/srv/state', 'work', A.id))).toBe(true)
-      expect(restoredB.execution!.directory.startsWith(join('/srv/state', 'work', B.id))).toBe(true)
+      expect(restoredA.execution!.directory.startsWith(join('/srv/state', 'work', repositoryNamespace(A.id)))).toBe(true)
+      expect(restoredB.execution!.directory.startsWith(join('/srv/state', 'work', repositoryNamespace(B.id)))).toBe(true)
       expect(restoredA.assignments[0]).toMatchObject({ state: 'running', startedAt: at })
       expect(restoredA.follows).toEqual([{ thread: `${refA.sourceId}:7`, own: true, repositoryId: A.id }])
       expect(restoredB.follows).toEqual([{ thread: `${refB.sourceId}:7`, own: true, repositoryId: B.id }])
