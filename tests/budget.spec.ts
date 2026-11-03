@@ -283,6 +283,36 @@ describe('counting a worker\'s steps', () => {
     expect(host.runtime.store.tickets.get(ticketId)!.assignments.at(-1)!.report).toMatchObject({ state: 'blocked', summary: blocked.summary })
   })
 
+  it('keeps the blocked report of the hard stop against any late report of that epoch', async () => {
+    const { ticketId, sessionId } = await host.accept('@bot 修一下回归')
+    const replied = host.runtime.store.tickets.get(ticketId)!.channels.length
+    for (let seq = 1; seq <= 180; seq++) await host.step(sessionId, seq)
+    const blocked = host.runtime.store.tickets.get(ticketId)!.assignments.at(-1)!.report!
+    // A tool call of the cancelled step still lands and tries to report the work as done; the domain refuses it, so no
+    // result reply and no end can happen from it, whatever order the cancellation and the tool call took.
+    await expect(host.runTool(sessionId, 'orchestrator_report', { state: 'ready', summary: 'All done.' })).rejects.toThrow(/blocked report stands/)
+    // So do a failure, a dropped result and a progress report.
+    for (const state of ['failed', 'dropped', 'progress'] as const) {
+      await expect(host.runTool(sessionId, 'orchestrator_report', { state, summary: `${state} after the stop` }))
+        .rejects.toThrow(/blocked report stands/)
+    }
+    const ticket = host.runtime.store.tickets.get(ticketId)!
+    expect(ticket.ended).toBeUndefined()
+    expect(ticket.assignments.at(-1)!.report).toMatchObject({ state: 'blocked', summary: blocked.summary })
+    expect(ticket.channels.length).toBe(replied)
+    // The cancelled turn's own idle cannot restate it as waiting either.
+    const agent = host.agents.get(sessionId) as unknown as { status: string }
+    agent.status = 'idle'
+    host.ctx.emit('agent/status', { agent, status: 'idle' } as never)
+    await host.runtime.idle()
+    expect(host.runtime.store.tickets.get(ticketId)!.assignments.at(-1)!.report).toMatchObject({ state: 'blocked', summary: blocked.summary })
+    // It stays a Ticket a person must act on, and the retry accepts reports again because it starts a fresh epoch.
+    expect(ticketSummary(ticket)).toMatchObject({ stage: 'person', action: 'blocked', actions: { retry: true } })
+    await host.runTool(host.runtime.masterId, 'orchestrator_ticket_retry', { ticket_id: ticketId })
+    await host.runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: 'Starting the fresh budget.' })
+    expect(host.runtime.store.tickets.get(ticketId)!.assignments.at(-1)!.report).toMatchObject({ state: 'progress' })
+  })
+
   it('starts a fresh epoch only on an explicit retry, not for an automatic restart or ordinary work', async () => {
     const { ticketId, sessionId } = await host.accept('@bot 修一下回归')
     for (let seq = 1; seq <= 6; seq++) await host.step(sessionId, seq)
@@ -303,6 +333,20 @@ describe('counting a worker\'s steps', () => {
     await host.step(sessionId, 4)
     await host.step(sessionId, 8)
     expect(host.runtime.store.tickets.get(ticketId)!.budget).toMatchObject({ used: 1, lastSeq: 8, epoch: 2 })
+  })
+
+  it('lets a restart after the hard stop keep the blocked report, and only a person\'s retry lift it', async () => {
+    const { ticketId, sessionId } = await host.accept('@bot 修一下回归')
+    for (let seq = 1; seq <= 180; seq++) await host.step(sessionId, seq)
+    const blocked = host.runtime.store.tickets.get(ticketId)!.assignments.at(-1)!.report!
+    const next = await host.restart()
+    const recovered = next.store.tickets.get(ticketId)!
+    expect(recovered.budget).toMatchObject({ used: 180, status: 'blocked' })
+    expect(recovered.assignments.at(-1)!.report).toMatchObject({ state: 'blocked', summary: blocked.summary })
+    // It shows as a blocked Ticket a person must act on, and a step of the restarted worker of the same epoch counts nothing.
+    expect(ticketSummary(recovered)).toMatchObject({ stage: 'person', action: 'blocked', actions: { retry: true } })
+    await host.step(sessionId, 181)
+    expect(next.store.tickets.get(ticketId)!.budget).toMatchObject({ used: 180, status: 'blocked', lastSeq: 181 })
   })
 
   it('blocks an analysis at its own 50-step limit, not the change limit', async () => {

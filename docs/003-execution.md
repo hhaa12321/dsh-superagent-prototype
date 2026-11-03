@@ -133,6 +133,11 @@ verified change. At the hard limit the Ticket records a `blocked` Report naming 
 limit, and the worker's turn and background work stop. The Ticket stays open and retryable; a person's explicit retry
 starts one fresh epoch, while an automatic restart, a transient retry or an ordinary Input delivery does not.
 
+That blocked Report is the epoch's last word. While the budget is `blocked`, the domain refuses any other Report on the
+Ticket and the Executor records no `waiting` or `failed` one of its own, so a tool call of the cancelled step that still
+lands, or a turn that goes idle, cannot turn the hard stop into a result, a wait, a failure or progress, whatever order
+they ran in. Only the retry, which resets the budget, accepts Reports again.
+
 ## Failure and recovery
 
 ### Executor blocked or failed

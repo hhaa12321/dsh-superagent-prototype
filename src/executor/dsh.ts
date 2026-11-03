@@ -429,6 +429,8 @@ export class DshExecutor implements Executor {
   /** Records a `failed` report on the ticket and relays the failure to the main Session in one transaction. */
   private failed(ticketId: string, summary: string): void {
     this.host.store.atomic(() => {
+      // A hard stop's blocked report is the Ticket's last word of its epoch: the domain refuses another one.
+      if (this.host.store.tickets.get(ticketId)?.budget.status === 'blocked') return
       const updated = this.host.engine.report(ticketId, { state: 'failed', summary })
       this.relay(resultRelay(updated, 'failed', summary))
     })
@@ -682,6 +684,8 @@ export class DshExecutor implements Executor {
     }
     const before = live()
     if (!before || this.host.closing()) return
+    // The hard stop already reported this turn blocked and cancelled it: its idle neither ends nor restates the turn.
+    if (before.budget.status === 'blocked') { this.host.engine.turnEnded(ticket.id, idle.id); return }
     // A turn a person started in the Session is the person's work, which goes on in the background as any turn's does.
     const report = runningAssignment(before)?.report, person = this.personal.get(ticket.id)
     // The worker read what reached it before a turn that ended: one it handed off with, or one whose background work ended.
